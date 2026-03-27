@@ -1,0 +1,95 @@
+{
+  "name": "nitro-graphql-validator",
+  "displayName": "Nitro GraphQL Validator",
+  "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Validates gql`` template literals against the Rails GraphQL schema.",
+  "version": "0.1.0",
+  "publisher": "PowerHome",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "graphql",
+    "validation",
+    "nitro",
+    "rails",
+    "powerhome",
+    "cobra"
+  ],
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "nitroGraphql.refreshSchema",
+        "title": "Nitro GraphQL: Refresh Schema"
+      },
+      {
+        "command": "nitroGraphql.clearCache",
+        "title": "Nitro GraphQL: Clear Schema Cache"
+      },
+      {
+        "command": "nitroGraphql.showSchemaStatus",
+        "title": "Nitro GraphQL: Show Schema Status"
+      }
+    ],
+    "configuration": {
+      "title": "Nitro GraphQL Validator",
+      "properties": {
+        "nitroGraphql.endpoint": {
+          "type": "string",
+          "default": "http://localhost:3000/graphql",
+          "description": "The GraphQL endpoint URL for schema introspection."
+        },
+        "nitroGraphql.pollingInterval": {
+          "type": "number",
+          "default": 30000,
+          "description": "Interval in milliseconds for polling schema changes (0 to disable)."
+        },
+        "nitroGraphql.validationDebounce": {
+          "type": "number",
+          "default": 300,
+          "description": "Debounce delay in milliseconds for validation on keystroke."
+        },
+        "nitroGraphql.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable the GraphQL validator."
+        },
+        "nitroGraphql.watchRubyFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Watch GraphQL Ruby definition files for schema changes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "jest --config jest.config.js",
+    "test:watch": "jest --watch",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "graphql": "^16.9.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.85.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.0"
+  }
+}
