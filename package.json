@@ -2,8 +2,8 @@
   "name": "nitro-graphql-validator",
   "displayName": "Nitro GraphQL Validator",
   "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Validates gql`` template literals against the Rails GraphQL schema.",
-  "version": "0.1.0",
-  "publisher": "PowerHome",
+  "version": "0.0.1",
+  "publisher": "ClancyTools",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -91,5 +91,18 @@
     "jest": "^29.7.0",
     "ts-jest": "^29.1.2",
     "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ClancyTools/nitro-graphql-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/ClancyTools/nitro-graphql-extension/issues"
+  },
+  "homepage": "https://github.com/ClancyTools/nitro-graphql-extension#readme",
+  "license": "MIT",
+  "galleryBanner": {
+    "color": "#1C1C1C",
+    "theme": "dark"
   }
 }
