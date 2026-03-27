@@ -1,7 +1,7 @@
 {
   "name": "nitro-graphql-validator",
   "displayName": "Nitro GraphQL Validator",
-  "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Validates gql`` template literals against the Rails GraphQL schema.",
+  "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Builds schema directly from Ruby GraphQL type definitions — no running Rails server required.",
   "version": "0.0.1",
   "publisher": "ClancyTools",
   "engines": {
@@ -44,16 +44,6 @@
     "configuration": {
       "title": "Nitro GraphQL Validator",
       "properties": {
-        "nitroGraphql.endpoint": {
-          "type": "string",
-          "default": "http://localhost:3000/graphql",
-          "description": "The GraphQL endpoint URL for schema introspection."
-        },
-        "nitroGraphql.pollingInterval": {
-          "type": "number",
-          "default": 30000,
-          "description": "Interval in milliseconds for polling schema changes (0 to disable)."
-        },
         "nitroGraphql.validationDebounce": {
           "type": "number",
           "default": 300,

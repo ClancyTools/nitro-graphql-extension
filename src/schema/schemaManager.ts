@@ -1,10 +1,10 @@
 import { GraphQLSchema } from "graphql"
 import { CacheManager } from "../cache/cacheManager"
 import {
-  fetchAndCacheSchema,
-  loadCachedSchema,
-  getCacheTimestamp,
-} from "./introspection"
+  LocalSchemaServer,
+  LocalSchemaServerOptions,
+} from "./localSchemaServer"
+import { cacheSchemaResult, getCacheTimestamp } from "./introspection"
 
 export type SchemaStatus = "unloaded" | "loading" | "ready" | "error" | "cached"
 
@@ -17,26 +17,23 @@ export interface SchemaStatusInfo {
 export class SchemaManager {
   private schema: GraphQLSchema | null = null
   private cache: CacheManager
-  private endpoint: string
-  private pollingInterval: number
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private basePath: string
+  private localServer: LocalSchemaServer | null = null
   private status: SchemaStatus = "unloaded"
   private statusMessage = ""
   private onStatusChange?: (info: SchemaStatusInfo) => void
   private onSchemaReady?: (schema: GraphQLSchema) => void
 
   constructor(
-    endpoint: string,
+    basePath: string,
     cache: CacheManager,
-    pollingInterval: number,
     callbacks?: {
       onStatusChange?: (info: SchemaStatusInfo) => void
       onSchemaReady?: (schema: GraphQLSchema) => void
     }
   ) {
-    this.endpoint = endpoint
+    this.basePath = basePath
     this.cache = cache
-    this.pollingInterval = pollingInterval
     this.onStatusChange = callbacks?.onStatusChange
     this.onSchemaReady = callbacks?.onSchemaReady
   }
@@ -63,88 +60,74 @@ export class SchemaManager {
   }
 
   async initialize(): Promise<void> {
-    this.setStatus("loading", "Loading GraphQL schema...")
+    this.setStatus("loading", "Building GraphQL schema from Ruby files...")
 
     try {
-      this.schema = await fetchAndCacheSchema(this.endpoint, this.cache)
-      this.setStatus("ready", "GraphQL schema ready")
-      this.onSchemaReady?.(this.schema)
-    } catch (fetchError) {
-      console.warn(
-        "[NitroGraphQL] Failed to fetch schema from endpoint, trying cache...",
-        fetchError
-      )
+      this.localServer = new LocalSchemaServer({
+        basePath: this.basePath,
+        onSchemaRebuilt: result => {
+          this.schema = result.schema
+          cacheSchemaResult(this.cache, result).catch(() => {})
 
-      const cached = await loadCachedSchema(this.cache)
-      if (cached) {
-        this.schema = cached
-        const ts = await getCacheTimestamp(this.cache)
-        const timeStr = ts ? new Date(ts).toLocaleString() : "unknown"
-        this.setStatus("cached", `Using cached schema from ${timeStr}`)
-        this.onSchemaReady?.(this.schema)
+          const msg =
+            result.errors.length > 0
+              ? `Schema ready (${result.typeCount} types, ${result.errors.length} warnings)`
+              : `Schema ready (${result.typeCount} types)`
+
+          this.setStatus("ready", msg)
+          this.onSchemaReady?.(result.schema)
+        },
+        onError: error => {
+          // Only set error status if we have no schema at all
+          if (!this.schema) {
+            this.setStatus("error", `Schema build failed: ${error.message}`)
+          } else {
+            // Keep using existing schema
+            console.warn(
+              `[NitroGraphQL] Schema rebuild failed, keeping previous schema: ${error.message}`
+            )
+          }
+        },
+      })
+
+      await this.localServer.start()
+
+      const schema = this.localServer.getSchema()
+      if (schema) {
+        this.schema = schema
+        const result = this.localServer.getLastBuildResult()
+        const typeCount = result?.typeCount ?? 0
+        this.setStatus("ready", `Schema ready (${typeCount} types)`)
+        this.onSchemaReady?.(schema)
       } else {
         this.setStatus(
           "error",
-          "No schema available. Start Rails server and refresh."
+          "No schema available. Check that Ruby GraphQL files exist."
         )
       }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[NitroGraphQL] Failed to start schema server: ${msg}`)
+      this.setStatus("error", `Schema build failed: ${msg}`)
     }
-
-    this.startPolling()
   }
 
   async refresh(): Promise<void> {
-    this.setStatus("loading", "Refreshing GraphQL schema...")
-    try {
-      this.schema = await fetchAndCacheSchema(this.endpoint, this.cache)
-      this.setStatus("ready", "GraphQL schema refreshed")
-      this.onSchemaReady?.(this.schema)
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      this.setStatus("error", `Schema refresh failed: ${msg}`)
-    }
-  }
+    this.setStatus("loading", "Rebuilding GraphQL schema...")
 
-  private startPolling(): void {
-    this.stopPolling()
-    if (this.pollingInterval <= 0) {
-      return
-    }
-
-    this.pollTimer = setInterval(async () => {
-      try {
-        const newSchema = await fetchAndCacheSchema(this.endpoint, this.cache)
-        this.schema = newSchema
-        if (this.status !== "ready") {
-          this.setStatus("ready", "GraphQL schema ready")
-        }
-        this.onSchemaReady?.(newSchema)
-      } catch {
-        // Polling failures are silent — keep using current schema
+    if (this.localServer) {
+      const success = await this.localServer.rebuildSchema()
+      if (!success && !this.schema) {
+        this.setStatus("error", "Schema rebuild failed")
       }
-    }, this.pollingInterval)
-  }
-
-  private stopPolling(): void {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer)
-      this.pollTimer = null
-    }
-  }
-
-  updateEndpoint(endpoint: string): void {
-    this.endpoint = endpoint
-  }
-
-  updatePollingInterval(interval: number): void {
-    this.pollingInterval = interval
-    if (this.status !== "unloaded") {
-      this.startPolling()
+    } else {
+      this.setStatus("error", "Schema server not running")
     }
   }
 
   dispose(): void {
-    this.stopPolling()
+    this.localServer?.stop().catch(() => {})
+    this.localServer = null
     this.schema = null
   }
 }

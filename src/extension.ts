@@ -36,6 +36,14 @@ export function activate(context: vscode.ExtensionContext): void {
     return
   }
 
+  // Determine workspace root (where Ruby GraphQL files live)
+  const workspaceFolders = vscode.workspace.workspaceFolders
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    console.warn("[NitroGraphQL] No workspace folder open.")
+    return
+  }
+  const basePath = workspaceFolders[0].uri.fsPath
+
   // Initialize components
   cacheManager = new CacheManager()
   diagnosticsProvider = new GraphQLDiagnosticsProvider()
@@ -49,14 +57,8 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBarItem.text = "$(sync~spin) GraphQL: Loading..."
   statusBarItem.show()
 
-  // Schema manager
-  const endpoint = config.get<string>(
-    "endpoint",
-    "http://localhost:3000/graphql"
-  )
-  const pollingInterval = config.get<number>("pollingInterval", 30000)
-
-  schemaManager = new SchemaManager(endpoint, cacheManager, pollingInterval, {
+  // Schema manager — builds schema from local Ruby files
+  schemaManager = new SchemaManager(basePath, cacheManager, {
     onStatusChange: info => {
       if (!statusBarItem) {
         return
@@ -114,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   )
 
-  // File watcher
+  // File watcher — watches TS/JS for query changes and .rb for schema changes
   fileWatcher = new FileWatcher({
     onQueryFileChanged: uri => {
       const doc = vscode.workspace.textDocuments.find(
@@ -126,7 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     onSchemaFileChanged: () => {
       console.log(
-        "[NitroGraphQL] GraphQL Ruby file changed, refreshing schema..."
+        "[NitroGraphQL] GraphQL Ruby file changed, rebuilding schema..."
       )
       schemaManager?.refresh()
     },
@@ -164,7 +166,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("nitroGraphql.refreshSchema", async () => {
       await schemaManager?.refresh()
-      vscode.window.showInformationMessage("GraphQL schema refreshed.")
+      vscode.window.showInformationMessage("GraphQL schema rebuilt.")
     })
   )
 
@@ -186,25 +188,10 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   )
 
-  // Configuration change listener
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration("nitroGraphql")) {
-        const newConfig = vscode.workspace.getConfiguration("nitroGraphql")
-        schemaManager?.updateEndpoint(
-          newConfig.get<string>("endpoint", "http://localhost:3000/graphql")
-        )
-        schemaManager?.updatePollingInterval(
-          newConfig.get<number>("pollingInterval", 30000)
-        )
-      }
-    })
-  )
-
   context.subscriptions.push({ dispose: () => statusBarItem?.dispose() })
   context.subscriptions.push({ dispose: () => schemaManager?.dispose() })
 
-  // Lazy initialization — start loading schema
+  // Start building schema from Ruby files
   schemaManager.initialize()
 
   // Validate already-open documents

@@ -39,6 +39,13 @@ const vscode = {
     onDidCloseTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
     onDidChangeConfiguration: jest.fn(() => ({ dispose: jest.fn() })),
     textDocuments: [],
+    workspaceFolders: [
+      {
+        uri: { fsPath: "/test/workspace" },
+        name: "test-workspace",
+        index: 0,
+      },
+    ],
   },
   commands: {
     registerCommand: jest.fn(() => ({ dispose: jest.fn() })),

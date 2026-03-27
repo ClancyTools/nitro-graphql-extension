@@ -1,85 +1,41 @@
-import {
-  buildClientSchema,
-  getIntrospectionQuery,
-  IntrospectionQuery,
-  GraphQLSchema,
-} from "graphql"
+import { GraphQLSchema } from "graphql"
 import { CacheManager } from "../cache/cacheManager"
+import {
+  buildSchemaFromDirectory,
+  SchemaBuildResult,
+} from "./rubySchemaBuilder"
 
-const SCHEMA_CACHE_KEY = "schema"
+const SCHEMA_CACHE_KEY = "schema-build-result"
 
-export async function fetchIntrospection(
-  endpoint: string
-): Promise<IntrospectionQuery> {
-  const query = getIntrospectionQuery()
-
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10000)
-
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) {
-      throw new Error(`Introspection failed: HTTP ${response.status}`)
-    }
-
-    const json = (await response.json()) as {
-      data?: IntrospectionQuery
-      errors?: Array<{ message: string }>
-    }
-    if (json.errors && json.errors.length > 0) {
-      throw new Error(
-        `Introspection errors: ${json.errors.map(e => e.message).join(", ")}`
-      )
-    }
-    if (!json.data) {
-      throw new Error("Introspection returned no data")
-    }
-
-    return json.data
-  } finally {
-    clearTimeout(timeout)
-  }
+/**
+ * Build schema directly from Ruby files on disk.
+ */
+export function buildSchemaFromFiles(basePath: string): SchemaBuildResult {
+  return buildSchemaFromDirectory(basePath)
 }
 
-export function buildSchemaFromIntrospection(
-  introspection: IntrospectionQuery
-): GraphQLSchema {
-  return buildClientSchema(introspection)
+/**
+ * Cache a successful schema build result (type defs metadata) to disk.
+ */
+export async function cacheSchemaResult(
+  cache: CacheManager,
+  result: SchemaBuildResult
+): Promise<void> {
+  // Cache metadata (not the schema object itself)
+  await cache.writeDisk(SCHEMA_CACHE_KEY, {
+    typeCount: result.typeCount,
+    errors: result.errors,
+    skippedFiles: result.skippedFiles,
+    timestamp: Date.now(),
+  })
 }
 
-export async function fetchAndCacheSchema(
-  endpoint: string,
-  cache: CacheManager
-): Promise<GraphQLSchema> {
-  const introspection = await fetchIntrospection(endpoint)
-  await cache.writeDisk(SCHEMA_CACHE_KEY, introspection)
-  const schema = buildSchemaFromIntrospection(introspection)
-  return schema
-}
-
-export async function loadCachedSchema(
-  cache: CacheManager
-): Promise<GraphQLSchema | null> {
-  const entry = await cache.readDisk<IntrospectionQuery>(SCHEMA_CACHE_KEY)
-  if (!entry) {
-    return null
-  }
-  try {
-    return buildSchemaFromIntrospection(entry.data)
-  } catch {
-    return null
-  }
-}
-
+/**
+ * Get the timestamp of the last cached schema build.
+ */
 export async function getCacheTimestamp(
   cache: CacheManager
 ): Promise<number | null> {
-  const entry = await cache.readDisk<IntrospectionQuery>(SCHEMA_CACHE_KEY)
-  return entry ? entry.timestamp : null
+  const entry = await cache.readDisk<{ timestamp: number }>(SCHEMA_CACHE_KEY)
+  return entry ? entry.data.timestamp : null
 }

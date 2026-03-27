@@ -1,141 +1,130 @@
-import {
-  buildSchema,
-  GraphQLSchema,
-  IntrospectionQuery,
-  introspectionFromSchema,
-} from "graphql"
-import { buildSchemaFromIntrospection } from "../src/schema/introspection"
+import * as fs from "fs"
+import * as path from "path"
+import * as os from "os"
+import { buildSchema, GraphQLSchema } from "graphql"
 import { SchemaManager } from "../src/schema/schemaManager"
 import { CacheManager } from "../src/cache/cacheManager"
 
-// Build a test schema and get its introspection result
-const TEST_SDL = `
-  type Query {
-    user(id: ID!): User
-    project(id: ID!): Project
-  }
-  type User {
-    id: ID!
-    name: String
-    email: String
-  }
-  type Project {
-    id: ID!
-    name: String
-  }
+// ── Fixtures for local schema building ──
+
+const QUERY_TYPE_FIXTURE = `
+module NitroGraphql
+  class QueryType < NitroGraphql::Types::BaseObject
+    graphql_name "Queries"
+    field :user, ::Directory::Graphql::EmployeeType, null: true
+  end
+end
 `
 
-describe("Schema Introspection", () => {
-  let testSchema: GraphQLSchema
-  let introspectionResult: IntrospectionQuery
+const EMPLOYEE_TYPE_FIXTURE = `
+module Directory
+  module Graphql
+    class EmployeeType < NitroGraphql::Types::BaseObject
+      graphql_name "Employee"
+      field :id, ID, null: false
+      field :name, String, null: false
+    end
+  end
+end
+`
 
-  beforeAll(() => {
-    testSchema = buildSchema(TEST_SDL)
-    introspectionResult = introspectionFromSchema(testSchema)
-  })
-
-  it("should build a schema from introspection result", () => {
-    const schema = buildSchemaFromIntrospection(introspectionResult)
-    expect(schema).toBeDefined()
-    const queryType = schema.getQueryType()
-    expect(queryType).toBeDefined()
-    expect(queryType!.name).toBe("Query")
-  })
-
-  it("should preserve query fields in built schema", () => {
-    const schema = buildSchemaFromIntrospection(introspectionResult)
-    const queryType = schema.getQueryType()!
-    const fields = queryType.getFields()
-    expect(fields["user"]).toBeDefined()
-    expect(fields["project"]).toBeDefined()
-  })
-
-  it("should preserve type fields in built schema", () => {
-    const schema = buildSchemaFromIntrospection(introspectionResult)
-    const userType = schema.getType("User")
-    expect(userType).toBeDefined()
-  })
-})
+function createTestFixtures(tmpDir: string): void {
+  const gqlDir = path.join(tmpDir, "components", "test", "app", "graphql")
+  fs.mkdirSync(gqlDir, { recursive: true })
+  fs.writeFileSync(path.join(gqlDir, "query_type.rb"), QUERY_TYPE_FIXTURE)
+  fs.writeFileSync(path.join(gqlDir, "employee_type.rb"), EMPLOYEE_TYPE_FIXTURE)
+}
 
 describe("SchemaManager", () => {
   let cache: CacheManager
+  let tmpDir: string
 
   beforeEach(() => {
     cache = new CacheManager(10)
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nitro-sm-test-"))
   })
 
   afterEach(async () => {
     await cache.clearAll()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
   it("should start with unloaded status", () => {
-    const manager = new SchemaManager("http://localhost:3000/graphql", cache, 0)
+    const manager = new SchemaManager(tmpDir, cache)
     const status = manager.getStatus()
     expect(status.status).toBe("unloaded")
     manager.dispose()
   })
 
   it("should have null schema before initialization", () => {
-    const manager = new SchemaManager("http://localhost:3000/graphql", cache, 0)
+    const manager = new SchemaManager(tmpDir, cache)
     expect(manager.getSchema()).toBeNull()
     manager.dispose()
   })
 
-  it("should fall back to cached schema when endpoint is unavailable", async () => {
-    // Pre-populate cache with a valid introspection result
-    const testSchema = buildSchema(TEST_SDL)
-    const introspection = introspectionFromSchema(testSchema)
-    await cache.writeDisk("schema", introspection)
-
+  it("should report error when no graphql files found", async () => {
     const statusChanges: string[] = []
-    const manager = new SchemaManager(
-      "http://localhost:99999/graphql",
-      cache,
-      0,
-      {
-        onStatusChange: info => statusChanges.push(info.status),
-      }
-    )
+    const manager = new SchemaManager(tmpDir, cache, {
+      onStatusChange: info => statusChanges.push(info.status),
+    })
 
     await manager.initialize()
 
-    // Should have fallen back to cached schema
-    expect(manager.getSchema()).not.toBeNull()
-    expect(statusChanges).toContain("cached")
-    manager.dispose()
-  })
-
-  it("should report error when no cache and endpoint unavailable", async () => {
-    const statusChanges: string[] = []
-    const manager = new SchemaManager(
-      "http://localhost:99999/graphql",
-      cache,
-      0,
-      {
-        onStatusChange: info => statusChanges.push(info.status),
-      }
-    )
-
-    await manager.initialize()
-
-    expect(manager.getSchema()).toBeNull()
     expect(statusChanges).toContain("error")
     manager.dispose()
   })
 
-  it("should update endpoint", () => {
-    const manager = new SchemaManager("http://localhost:3000/graphql", cache, 0)
-    manager.updateEndpoint("http://localhost:4000/graphql")
-    // Just verifying no throw
+  it("should build schema from local Ruby files", async () => {
+    createTestFixtures(tmpDir)
+
+    const statusChanges: string[] = []
+    const manager = new SchemaManager(tmpDir, cache, {
+      onStatusChange: info => statusChanges.push(info.status),
+    })
+
+    await manager.initialize()
+
+    expect(manager.getSchema()).not.toBeNull()
+    expect(statusChanges).toContain("ready")
     manager.dispose()
   })
 
-  it("should clean up on dispose", () => {
-    const manager = new SchemaManager(
-      "http://localhost:3000/graphql",
-      cache,
-      30000
-    )
+  it("should call onSchemaReady when schema is built", async () => {
+    createTestFixtures(tmpDir)
+
+    let schemaReady = false
+    const manager = new SchemaManager(tmpDir, cache, {
+      onSchemaReady: () => {
+        schemaReady = true
+      },
+    })
+
+    await manager.initialize()
+
+    expect(schemaReady).toBe(true)
+    manager.dispose()
+  })
+
+  it("should refresh schema on demand", async () => {
+    createTestFixtures(tmpDir)
+
+    const manager = new SchemaManager(tmpDir, cache)
+    await manager.initialize()
+
+    const schemaBefore = manager.getSchema()
+    expect(schemaBefore).not.toBeNull()
+
+    await manager.refresh()
+    expect(manager.getSchema()).not.toBeNull()
+    manager.dispose()
+  })
+
+  it("should clean up on dispose", async () => {
+    createTestFixtures(tmpDir)
+
+    const manager = new SchemaManager(tmpDir, cache)
+    await manager.initialize()
+
     manager.dispose()
     expect(manager.getSchema()).toBeNull()
   })
