@@ -7,7 +7,7 @@ fixtures/**
 .eslintrc.json
 **/*.map
 **/*.ts
-!out/**/*.js
+!out/extension.js
 **/tsconfig.json
 jest.config.js
 coverage/**
