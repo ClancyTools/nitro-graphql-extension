@@ -505,9 +505,9 @@ export function buildGraphQLSchema(
             type: resolveOutputType(field.type, field.isList, !field.nullable),
           }
         }
-        // If no fields, add a dummy __typename field to pass validation
+        // If no fields, add a dummy placeholder field to pass validation
         if (Object.keys(fieldConfig).length === 0) {
-          fieldConfig["__placeholder"] = {
+          fieldConfig["placeholder"] = {
             type: GraphQLString,
             deprecationReason: "Placeholder for empty type",
           }
@@ -540,7 +540,7 @@ export function buildGraphQLSchema(
           }
         }
         if (Object.keys(fieldConfig).length === 0) {
-          fieldConfig["__placeholder"] = {
+          fieldConfig["placeholder"] = {
             type: GraphQLString,
             deprecationReason: "Placeholder for empty interface",
           }
@@ -563,7 +563,7 @@ export function buildGraphQLSchema(
           }
         }
         if (Object.keys(fieldConfig).length === 0) {
-          fieldConfig["__placeholder"] = {
+          fieldConfig["placeholder"] = {
             type: GraphQLString,
           }
         }
