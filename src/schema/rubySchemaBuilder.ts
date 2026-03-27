@@ -17,6 +17,7 @@ import {
   GraphQLOutputType,
   GraphQLInputType,
   GraphQLFieldConfigMap,
+  GraphQLFieldConfigArgumentMap,
   GraphQLInputFieldConfigMap,
   GraphQLEnumValueConfigMap,
   validateSchema,
@@ -34,9 +35,34 @@ export interface FieldDefinition {
   access: AccessLevel
 }
 
+export interface ArgumentDefinition {
+  name: string
+  type: string
+  required: boolean
+  isList: boolean
+  defaultValue?: string
+}
+
+export interface ResolverDefinition {
+  className: string
+  returnType: string
+  returnTypeIsList: boolean
+  returnTypeNullable: boolean
+  arguments: ArgumentDefinition[]
+  fileName: string
+}
+
+export interface ResolverRegistration {
+  fieldName: string
+  resolverClassName: string
+  target: "query" | "mutation"
+}
+
 export interface GraphQLTypeDefinition {
   name: string
-  kind: "object" | "input" | "interface" | "enum" | "scalar" | "mutation"
+  /** The name derived from the Ruby class name (before graphql_name override) */
+  classBasedName: string
+  kind: "object" | "input" | "interface" | "enum" | "scalar"
   parentClass: string
   fields: FieldDefinition[]
   implements: string[]
@@ -134,6 +160,7 @@ function loadRbFilesRecursive(dir: string, files: Map<string, string>): void {
 
 /**
  * Parse a Ruby GraphQL type definition file into a structured definition.
+ * Returns null for resolver classes (use parseResolverDefinition instead).
  */
 export function parseRubyTypeDefinition(
   fileContent: string,
@@ -153,6 +180,11 @@ export function parseRubyTypeDefinition(
   const className = classMatch[1]
   const parentClass = classMatch[2]
 
+  // Check if this is a resolver class — handled separately
+  if (isResolverClass(parentClass)) {
+    return null
+  }
+
   // Determine kind from parent class
   const kind = inferKind(parentClass)
   if (!kind) {
@@ -161,9 +193,8 @@ export function parseRubyTypeDefinition(
 
   // Extract graphql_name if present, otherwise derive from class name
   const graphqlNameMatch = content.match(/graphql_name\s+["'](\w+)["']/)
-  const name = graphqlNameMatch
-    ? graphqlNameMatch[1]
-    : deriveTypeName(className)
+  const classBasedName = deriveTypeName(className)
+  const name = graphqlNameMatch ? graphqlNameMatch[1] : classBasedName
 
   // Extract implements
   const implementsList: string[] = []
@@ -192,6 +223,7 @@ export function parseRubyTypeDefinition(
 
   return {
     name,
+    classBasedName,
     kind,
     parentClass,
     fields,
@@ -199,6 +231,20 @@ export function parseRubyTypeDefinition(
     enumValues,
     fileName,
   }
+}
+
+/**
+ * Check if the parent class indicates a resolver (BaseQuery / Resolver).
+ */
+function isResolverClass(parentClass: string): boolean {
+  const lower = parentClass.toLowerCase()
+  return (
+    lower.includes("basequery") ||
+    lower.includes("base_query") ||
+    lower.includes("resolver") ||
+    lower.includes("basemutation") ||
+    lower.includes("base_mutation")
+  )
 }
 
 /**
@@ -218,9 +264,6 @@ function inferKind(parentClass: string): GraphQLTypeDefinition["kind"] | null {
   if (lower.includes("scalar")) {
     return "scalar"
   }
-  if (lower.includes("mutation")) {
-    return "mutation"
-  }
   if (lower.includes("baseobject") || lower.includes("object")) {
     return "object"
   }
@@ -229,11 +272,11 @@ function inferKind(parentClass: string): GraphQLTypeDefinition["kind"] | null {
 
 /**
  * Derive a GraphQL type name from a Ruby class name.
- * e.g. "CourseType" → "Course", "AudienceInterface" → "AudienceInterface"
+ * e.g. "CourseType" → "Course", "EmployeeInputType" → "EmployeeInput"
  */
 function deriveTypeName(className: string): string {
-  // Strip "Type" suffix for object types, keep others
-  if (className.endsWith("Type") && !className.endsWith("InputType")) {
+  // Strip "Type" suffix — Ruby convention uses `FooType` → GraphQL `Foo`
+  if (className.endsWith("Type")) {
     return className.slice(0, -4)
   }
   return className
@@ -377,6 +420,267 @@ export function parseAccessLevel(optionString: string): AccessLevel {
   return ["private"]
 }
 
+// ── Resolver Parsing ───────────────────────────────────────────────────────────
+
+/**
+ * Convert snake_case to camelCase.
+ */
+export function snakeToCamel(snake: string): string {
+  return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+}
+
+/**
+ * Parse a Ruby resolver class (BaseQuery subclass) into a ResolverDefinition.
+ * These classes define `argument` declarations and a `type` return.
+ */
+export function parseResolverDefinition(
+  fileContent: string,
+  fileName: string
+): ResolverDefinition | null {
+  const lines = fileContent.split("\n")
+  const contentLines = lines.filter(l => !l.trim().startsWith("#"))
+  const content = contentLines.join("\n")
+
+  // Extract class definition
+  const classMatch = content.match(/class\s+(\w+)\s*<\s*([\w:]+)/)
+  if (!classMatch) {
+    return null
+  }
+
+  const className = classMatch[1]
+  const parentClass = classMatch[2]
+
+  if (!isResolverClass(parentClass)) {
+    return null
+  }
+
+  // Derive the full class name from module nesting
+  const modules: string[] = []
+  const moduleRegex = /module\s+([\w:]+)/g
+  let modMatch: RegExpExecArray | null
+  while ((modMatch = moduleRegex.exec(content)) !== null) {
+    modules.push(modMatch[1])
+  }
+  const fullClassName = [...modules, className].join("::")
+
+  // Parse return type: `type SomeType, null: false` or `type [SomeType], null: false`
+  const typeMatch = content.match(/^\s*type\s+(\[?[:\w]+\]?)\s*,?\s*(.*?)$/m)
+  let returnType = "String"
+  let returnTypeIsList = false
+  let returnTypeNullable = true
+
+  if (typeMatch) {
+    const rawType = typeMatch[1].trim()
+    const typeOpts = typeMatch[2] || ""
+
+    returnTypeIsList = rawType.startsWith("[")
+    const typeStr = rawType.replace(/^\[|\]$/g, "").trim()
+    returnType = normalizeRubyType(typeStr) || "String"
+
+    const nullMatch = typeOpts.match(/null:\s*(true|false)/)
+    returnTypeNullable = nullMatch ? nullMatch[1] === "true" : true
+  }
+
+  // Parse arguments
+  const args = parseArguments(content)
+
+  return {
+    className: fullClassName,
+    returnType,
+    returnTypeIsList,
+    returnTypeNullable,
+    arguments: args,
+    fileName,
+  }
+}
+
+/**
+ * Parse `argument` declarations from Ruby resolver content.
+ * Format: `argument :name, Type, required: false, default_value: "x"`
+ */
+export function parseArguments(content: string): ArgumentDefinition[] {
+  const args: ArgumentDefinition[] = []
+  const argRegex = /argument\s+:(\w+)\s*,\s*(.+)/g
+
+  let match: RegExpExecArray | null
+  while ((match = argRegex.exec(content)) !== null) {
+    const argName = match[1]
+    const rest = match[2]
+
+    const parsed = parseArgumentRest(rest)
+    if (parsed) {
+      args.push({
+        name: snakeToCamel(argName),
+        ...parsed,
+      })
+    }
+  }
+
+  return args
+}
+
+interface ParsedArgumentRest {
+  type: string
+  required: boolean
+  isList: boolean
+  defaultValue?: string
+}
+
+/**
+ * Parse the remainder of an argument declaration after the name.
+ */
+function parseArgumentRest(rest: string): ParsedArgumentRest | null {
+  const isList = rest.trim().startsWith("[")
+
+  let typePart: string
+  if (isList) {
+    const bracketMatch = rest.match(/^\s*\[([^\]]+)\]/)
+    if (!bracketMatch) {
+      return null
+    }
+    typePart = bracketMatch[1].trim()
+  } else {
+    // Get everything up to first comma or end
+    const parts = rest.split(",")
+    typePart = parts[0].trim()
+  }
+
+  const type = normalizeRubyType(typePart)
+  if (!type) {
+    return null
+  }
+
+  // Parse required option — default is true for arguments
+  const requiredMatch = rest.match(/required:\s*(true|false)/)
+  const required = requiredMatch ? requiredMatch[1] === "true" : true
+
+  // Parse default_value option
+  const defaultMatch = rest.match(/default_value:\s*["']?([^"',\s]+)["']?/)
+  const defaultValue = defaultMatch ? defaultMatch[1] : undefined
+
+  // If there's a default_value, the argument is effectively optional
+  const effectiveRequired = defaultValue !== undefined ? false : required
+
+  return { type, required: effectiveRequired, isList, defaultValue }
+}
+
+// ── Registration File Parsing ──────────────────────────────────────────────────
+
+/**
+ * Parse a component registration file (graphql.rb) to extract resolver registrations.
+ * These files wire resolver classes to field names on the root Query/Mutations types.
+ *
+ * Format:
+ *   queries do
+ *     field :field_name, resolver: ::Module::ResolverClass
+ *   end
+ *
+ *   mutations do
+ *     field :field_name, resolver: ::Module::MutationClass
+ *   end
+ */
+export function parseRegistrationFile(
+  fileContent: string
+): ResolverRegistration[] {
+  const registrations: ResolverRegistration[] = []
+
+  // Split into queries and mutations blocks
+  const queriesBlock = extractBlock(fileContent, "queries")
+  const mutationsBlock = extractBlock(fileContent, "mutations")
+
+  if (queriesBlock) {
+    parseRegistrationBlock(queriesBlock, "query", registrations)
+  }
+  if (mutationsBlock) {
+    parseRegistrationBlock(mutationsBlock, "mutation", registrations)
+  }
+
+  return registrations
+}
+
+/**
+ * Extract a block between `name do` and its matching `end`.
+ */
+function extractBlock(content: string, blockName: string): string | null {
+  const blockRegex = new RegExp(
+    `\\b${blockName}\\s+do\\b([\\s\\S]*?)^\\s*end`,
+    "m"
+  )
+  const match = content.match(blockRegex)
+  return match ? match[1] : null
+}
+
+/**
+ * Parse field registrations within a queries/mutations block.
+ */
+function parseRegistrationBlock(
+  block: string,
+  target: "query" | "mutation",
+  registrations: ResolverRegistration[]
+): void {
+  // Match: field :field_name, resolver: ::Module::Class (multiline-safe)
+  // The field name and resolver may be on different lines
+  const fieldRegex = /field\s+:(\w+)\s*,\s*\n?\s*resolver:\s*:*([\w:]+)/g
+
+  let match: RegExpExecArray | null
+  while ((match = fieldRegex.exec(block)) !== null) {
+    const fieldName = snakeToCamel(match[1])
+    const resolverClassName = match[2]
+
+    registrations.push({
+      fieldName,
+      resolverClassName,
+      target,
+    })
+  }
+}
+
+// ── Registration File Discovery ────────────────────────────────────────────────
+
+/**
+ * Find all component registration files (graphql.rb) under basePath.
+ * Pattern: components/COMPONENT/lib/COMPONENT/graphql.rb
+ */
+export function findRegistrationFiles(basePath: string): string[] {
+  const results: string[] = []
+  const componentsDir = path.join(basePath, "components")
+
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(componentsDir, { withFileTypes: true })
+  } catch {
+    return results
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue
+    }
+
+    // Look for lib/<component_name>/graphql.rb
+    const libDir = path.join(componentsDir, entry.name, "lib")
+    try {
+      const libEntries = fs.readdirSync(libDir, { withFileTypes: true })
+      for (const libEntry of libEntries) {
+        if (!libEntry.isDirectory()) {
+          continue
+        }
+        const gqlFile = path.join(libDir, libEntry.name, "graphql.rb")
+        try {
+          fs.accessSync(gqlFile, fs.constants.R_OK)
+          results.push(gqlFile)
+        } catch {
+          // File doesn't exist, skip
+        }
+      }
+    } catch {
+      // lib dir doesn't exist, skip
+    }
+  }
+
+  return results
+}
+
 // ── Schema Building ────────────────────────────────────────────────────────────
 
 // Custom scalars used by Rails GraphQL
@@ -405,15 +709,31 @@ const BUILTIN_SCALARS: Record<string, GraphQLScalarType> = {
 }
 
 /**
- * Build a GraphQLSchema from parsed Ruby type definitions.
+ * Build a GraphQLSchema from parsed type definitions, resolvers, and registrations.
  */
 export function buildGraphQLSchema(
-  typeDefs: GraphQLTypeDefinition[]
+  typeDefs: GraphQLTypeDefinition[],
+  resolvers: ResolverDefinition[] = [],
+  registrations: ResolverRegistration[] = []
 ): GraphQLSchema {
   // Collect all types by name for cross-referencing
   const typeMap = new Map<string, GraphQLTypeDefinition>()
+  // Alias map: derived class name → actual graphql name
+  // Handles resolver references like AgentStatsType → WarrantyAgentStats
+  const aliasMap = new Map<string, string>()
+
   for (const td of typeDefs) {
     typeMap.set(td.name, td)
+    // If the graphql_name differs from the class-derived name, add an alias
+    if (td.classBasedName !== td.name) {
+      aliasMap.set(td.classBasedName, td.name)
+    }
+  }
+
+  // Build resolver lookup by full class name
+  const resolverMap = new Map<string, ResolverDefinition>()
+  for (const r of resolvers) {
+    resolverMap.set(r.className, r)
   }
 
   // Lazy type registry to handle circular references
@@ -472,7 +792,16 @@ export function buildGraphQLSchema(
       return registry.get(name)!
     }
 
-    const def = typeMap.get(name)
+    // Check alias map: class-derived name → graphql name
+    const aliased = aliasMap.get(name)
+    if (aliased && registry.has(aliased)) {
+      return registry.get(aliased)!
+    }
+
+    let def = typeMap.get(name)
+    if (!def && aliased) {
+      def = typeMap.get(aliased)
+    }
     if (!def) {
       return null
     }
@@ -480,7 +809,6 @@ export function buildGraphQLSchema(
     // Build the type based on kind
     switch (def.kind) {
       case "object":
-      case "mutation":
         return buildObjectType(def)
       case "interface":
         return buildInterfaceType(def)
@@ -597,7 +925,94 @@ export function buildGraphQLSchema(
     return scalar
   }
 
-  // Find the Queries and Mutations root types
+  /**
+   * Build field arguments from a resolver's argument definitions.
+   */
+  function buildFieldArgs(
+    argDefs: ArgumentDefinition[]
+  ): GraphQLFieldConfigArgumentMap {
+    const args: GraphQLFieldConfigArgumentMap = {}
+    for (const argDef of argDefs) {
+      let argType = resolveInputType(argDef.type, argDef.isList, true)
+      if (argDef.required) {
+        argType =
+          argType instanceof GraphQLNonNull
+            ? argType
+            : new GraphQLNonNull(argType)
+      }
+      args[argDef.name] = { type: argType }
+    }
+    return args
+  }
+
+  /**
+   * Match a registration's resolverClassName to a parsed resolver.
+   * The registration may use the full path (::Warranty::Graphql::AgentStatsQuery)
+   * while the resolver stores (Warranty::Graphql::AgentStatsQuery).
+   */
+  function findResolver(
+    resolverClassName: string
+  ): ResolverDefinition | undefined {
+    // Strip leading :: for matching
+    const normalized = resolverClassName.replace(/^::/, "")
+    for (const [key, resolver] of resolverMap) {
+      if (
+        key === normalized ||
+        key.endsWith("::" + normalized.split("::").pop())
+      ) {
+        return resolver
+      }
+    }
+    // Also try matching just the class name
+    const className = normalized.split("::").pop()!
+    for (const [, resolver] of resolverMap) {
+      const resolverClass = resolver.className.split("::").pop()
+      if (resolverClass === className) {
+        return resolver
+      }
+    }
+    return undefined
+  }
+
+  // Pre-build all types so they end up in the registry
+  for (const def of typeDefs) {
+    if (!registry.has(def.name)) {
+      getOrBuildType(def.name)
+    }
+  }
+
+  // Build root query fields from registrations
+  const queryFields: GraphQLFieldConfigMap<any, any> = {}
+  const mutationFields: GraphQLFieldConfigMap<any, any> = {}
+
+  for (const reg of registrations) {
+    const resolver = findResolver(reg.resolverClassName)
+    if (!resolver) {
+      continue
+    }
+
+    const returnType = resolveOutputType(
+      resolver.returnType,
+      resolver.returnTypeIsList,
+      resolver.returnTypeNullable
+    )
+
+    const args = buildFieldArgs(resolver.arguments)
+
+    const fieldConfig: any = { type: returnType }
+    if (Object.keys(args).length > 0) {
+      fieldConfig.args = args
+    }
+
+    if (reg.target === "query") {
+      queryFields[reg.fieldName] = fieldConfig
+    } else {
+      mutationFields[reg.fieldName] = fieldConfig
+    }
+  }
+
+  // Also check if there's a manually-defined Query/Mutations type in the typeDefs
+  // (for backward compatibility with test fixtures)
   const queriesDef = typeDefs.find(
     t => t.name === "Queries" || t.name === "Query" || t.name === "QueryType"
   )
@@ -608,26 +1023,61 @@ export function buildGraphQLSchema(
       t.name === "MutationType"
   )
 
-  // Pre-build all types so they end up in the registry
-  for (const def of typeDefs) {
-    if (!registry.has(def.name)) {
-      getOrBuildType(def.name)
+  if (queriesDef) {
+    const existingQueryType = registry.get(queriesDef.name) as GraphQLObjectType
+    if (existingQueryType) {
+      const fields = existingQueryType.getFields()
+      for (const [name, field] of Object.entries(fields)) {
+        if (!queryFields[name]) {
+          queryFields[name] = { type: field.type }
+        }
+      }
     }
   }
 
-  const queryType = queriesDef
-    ? (registry.get(queriesDef.name) as GraphQLObjectType) || undefined
-    : undefined
+  if (mutationsDef) {
+    const existingMutationType = registry.get(
+      mutationsDef.name
+    ) as GraphQLObjectType
+    if (existingMutationType) {
+      const fields = existingMutationType.getFields()
+      for (const [name, field] of Object.entries(fields)) {
+        if (!mutationFields[name]) {
+          mutationFields[name] = { type: field.type }
+        }
+      }
+    }
+  }
 
-  const mutationType = mutationsDef
-    ? (registry.get(mutationsDef.name) as GraphQLObjectType) || undefined
-    : undefined
-
-  if (!queryType) {
+  // Build the root Query type
+  const hasQueryFields = Object.keys(queryFields).length > 0
+  if (!hasQueryFields) {
     throw new Error(
       "[NitroGraphQL] No Query/Queries root type found in schema files"
     )
   }
+
+  // Remove legacy Query/Mutations types from registry to avoid duplicate names
+  if (queriesDef) {
+    registry.delete(queriesDef.name)
+  }
+  if (mutationsDef) {
+    registry.delete(mutationsDef.name)
+  }
+
+  const queryType = new GraphQLObjectType({
+    name: "Queries",
+    fields: () => queryFields,
+  })
+
+  // Build the root Mutation type (optional)
+  const hasMutationFields = Object.keys(mutationFields).length > 0
+  const mutationType = hasMutationFields
+    ? new GraphQLObjectType({
+        name: "Mutations",
+        fields: () => mutationFields,
+      })
+    : undefined
 
   // Collect all types for the schema
   const types = Array.from(registry.values()).filter(
@@ -667,12 +1117,14 @@ export function validateSchemaIntegrity(schema: GraphQLSchema): string[] {
 export interface SchemaBuildResult {
   schema: GraphQLSchema
   typeCount: number
+  resolverCount: number
+  registrationCount: number
   errors: string[]
   skippedFiles: string[]
 }
 
 /**
- * Full pipeline: discover → load → parse → build → validate.
+ * Full pipeline: discover → load → parse (types + resolvers + registrations) → build → validate.
  */
 export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   console.log(`[NitroGraphQL] Discovering GraphQL files in: ${basePath}`)
@@ -690,13 +1142,22 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   console.log(`[NitroGraphQL] Loaded ${files.size} Ruby files`)
 
   const typeDefs: GraphQLTypeDefinition[] = []
+  const resolvers: ResolverDefinition[] = []
   const skippedFiles: string[] = []
 
   for (const [filePath, content] of files) {
     try {
+      // Try parsing as a type definition first
       const def = parseRubyTypeDefinition(content, filePath)
       if (def) {
         typeDefs.push(def)
+        continue
+      }
+
+      // Try parsing as a resolver
+      const resolver = parseResolverDefinition(content, filePath)
+      if (resolver) {
+        resolvers.push(resolver)
       }
     } catch (error) {
       console.warn(`[NitroGraphQL] Failed to parse ${filePath}: ${error}`)
@@ -704,9 +1165,34 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
     }
   }
 
-  console.log(`[NitroGraphQL] Parsed ${typeDefs.length} type definitions`)
+  console.log(
+    `[NitroGraphQL] Parsed ${typeDefs.length} type definitions, ${resolvers.length} resolvers`
+  )
 
-  const schema = buildGraphQLSchema(typeDefs)
+  // Parse registration files
+  const registrationFiles = findRegistrationFiles(basePath)
+  console.log(
+    `[NitroGraphQL] Found ${registrationFiles.length} registration files`
+  )
+
+  const registrations: ResolverRegistration[] = []
+  for (const regFile of registrationFiles) {
+    try {
+      const content = fs.readFileSync(regFile, "utf-8")
+      const regs = parseRegistrationFile(content)
+      registrations.push(...regs)
+    } catch (error) {
+      console.warn(
+        `[NitroGraphQL] Failed to parse registration file ${regFile}: ${error}`
+      )
+    }
+  }
+
+  console.log(
+    `[NitroGraphQL] Found ${registrations.length} resolver registrations`
+  )
+
+  const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
   const validationErrors = validateSchemaIntegrity(schema)
 
   if (validationErrors.length > 0) {
@@ -718,6 +1204,8 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   return {
     schema,
     typeCount: typeDefs.length,
+    resolverCount: resolvers.length,
+    registrationCount: registrations.length,
     errors: validationErrors,
     skippedFiles,
   }
