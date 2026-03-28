@@ -9,7 +9,9 @@ Real-time GraphQL query/mutation validation for nitro-web's CoBRA (Component-Bas
 - **Cached fallback** — Falls back to last-known-good cached schema when the Rails server is unavailable
 - **Auto-refresh** — Polls for schema changes periodically (configurable)
 - **File watching** — Watches `.rb` GraphQL definition files and re-fetches schema on changes
-- **Hover tooltips** — Hover over errors for human-readable explanations
+- **Hover type information** — Hover over GraphQL fields to see their types, arguments, and descriptions. For root fields (queries/mutations), also shows the resolver class name and access level with a clickable link to open the resolver file
+- **Autocomplete for fields** — Type suggestions for fields and arguments as you write queries, with inline snippets for required arguments and nested selections
+- **Hover error tooltips** — Hover over validation errors for human-readable explanations
 - **Quick fixes** — Suggests similar field names when you misspell one
 - **Status bar** — Shows current schema status (Ready / Cached / Loading / Error)
 

@@ -145,7 +145,23 @@ export function buildHoverContent(
                 ? "mutation"
                 : "subscription"
             md.appendMarkdown(`**${node.name.value}** _(${opKind})_\n\n`)
-            md.appendMarkdown(`**Returns:** \`${typeToString(fieldType)}\`\n\n`)
+
+            // Build return type display with potential clickable link for custom types
+            const returnTypeString = typeToString(fieldType)
+            const baseReturnTypeName = getBaseTypeName(fieldType)
+            const returnTypeFilePath = baseReturnTypeName
+              ? getTypeFilePath(schema, baseReturnTypeName)
+              : null
+
+            if (returnTypeFilePath) {
+              const returnTypeLink = makeFileCommandLink(
+                returnTypeString,
+                returnTypeFilePath
+              )
+              md.appendMarkdown(`**Returns:** ${returnTypeLink}\n\n`)
+            } else {
+              md.appendMarkdown(`**Returns:** \`${returnTypeString}\`\n\n`)
+            }
 
             if (fieldDef.args.length > 0) {
               md.appendMarkdown(`**Arguments:**\n\n`)
@@ -188,7 +204,21 @@ export function buildHoverContent(
             }
           } else {
             md.appendMarkdown(`**${node.name.value}**\n\n`)
-            md.appendMarkdown(`**Type:** \`${typeToString(fieldType)}\`\n\n`)
+
+            // Build type display with potential clickable link for custom types
+            const typeString = typeToString(fieldType)
+            const baseTypeName = getBaseTypeName(fieldType)
+            const typeFilePath = baseTypeName
+              ? getTypeFilePath(schema, baseTypeName)
+              : null
+
+            if (typeFilePath) {
+              const typeLink = makeFileCommandLink(typeString, typeFilePath)
+              md.appendMarkdown(`**Type:** ${typeLink}\n\n`)
+            } else {
+              md.appendMarkdown(`**Type:** \`${typeString}\`\n\n`)
+            }
+
             md.appendMarkdown(`**On:** \`${parentType.name}\`\n\n`)
 
             if (fieldDef.args.length > 0) {
@@ -222,6 +252,30 @@ function typeToString(type: GraphQLType): string {
   if (isNonNullType(type)) return `${typeToString(type.ofType)}!`
   if (isListType(type)) return `[${typeToString(type.ofType)}]`
   return (type as GraphQLNamedType).name
+}
+
+/**
+ * Extract the base (named) type from a GraphQL type, stripping away non-null and list wrappers.
+ */
+export function getBaseTypeName(type: GraphQLType): string | null {
+  if (isNonNullType(type) || isListType(type)) {
+    return getBaseTypeName(type.ofType)
+  }
+  const namedType = type as GraphQLNamedType
+  return namedType.name || null
+}
+
+/**
+ * Get the file path for a type from the schema's typeFileMap extensions.
+ * Returns null if the type is not a custom type or no mapping exists.
+ */
+function getTypeFilePath(
+  schema: GraphQLSchema,
+  typeName: string
+): string | null {
+  const ext = schema.extensions as Record<string, unknown> | undefined
+  const typeFileMap = ext?.typeFileMap as Record<string, string> | undefined
+  return (typeFileMap && typeFileMap[typeName]) || null
 }
 
 /**

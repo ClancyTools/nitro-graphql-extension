@@ -5,6 +5,7 @@ import {
   GraphQLString,
   GraphQLBoolean,
   GraphQLNonNull,
+  GraphQLList,
 } from "graphql"
 import {
   GraphQLTypeHoverProvider,
@@ -494,5 +495,156 @@ describe("buildHoverContent — resolver extensions", () => {
     const idOffset = query.indexOf("{ id }") + 2
     const result = buildHoverContent(schemaWithExtensions, query, idOffset)
     expect(result!.value).not.toContain("Resolver:")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildHoverContent — type file links (schema with typeFileMap)
+// ---------------------------------------------------------------------------
+
+describe("buildHoverContent — type file links", () => {
+  // Build a schema with custom types that have file mappings
+  const warrantyItemType = new GraphQLObjectType({
+    name: "WarrantyItem",
+    fields: {
+      id: { type: new GraphQLNonNull(GraphQLString) },
+      name: { type: GraphQLString },
+    },
+  })
+
+  const itemableType = new GraphQLObjectType({
+    name: "Itemable",
+    fields: {
+      id: { type: new GraphQLNonNull(GraphQLString) },
+    },
+  })
+
+  const schemaWithTypeFileMap = new GraphQLSchema({
+    query: new GraphQLObjectType({
+      name: "Query",
+      fields: {
+        warranty: {
+          type: warrantyItemType,
+        },
+        itemable: {
+          type: itemableType,
+        },
+      },
+    }),
+    types: [warrantyItemType, itemableType],
+    extensions: {
+      typeFileMap: {
+        WarrantyItem: "/app/graphql/types/warranty_item_type.rb",
+        Itemable: "/app/graphql/types/itemable_type.rb",
+      },
+    },
+  })
+
+  it("shows custom type as a clickable link for root fields", () => {
+    // "query { warranty }"
+    //          ^-- offset 8 (warranty)
+    const query = "query { warranty }"
+    const result = buildHoverContent(schemaWithTypeFileMap, query, 8)
+    expect(result).not.toBeNull()
+    expect(result!.value).toContain("command:vscode.open")
+    expect(result!.value).toContain("warranty_item_type.rb")
+  })
+
+  it("shows custom type as a clickable link for nested fields", () => {
+    // "query { warranty { id } }"
+    //          ^-- warranty at offset 8
+    const query = "query { warranty { id } }"
+    const result = buildHoverContent(schemaWithTypeFileMap, query, 8)
+    expect(result).not.toBeNull()
+    expect(result!.value).toContain("warranty_item_type.rb")
+  })
+
+  it("shows builtin types (String, ID, etc) without clickable links", () => {
+    // String type should not have a file mapping
+    const query = "query { warranty { name } }"
+    // "query { warranty { ".length = 19, so 'name' starts at 19
+    const result = buildHoverContent(schemaWithTypeFileMap, query, 19)
+    expect(result).not.toBeNull()
+    // Should show the type as code, not as a link
+    expect(result!.value).toContain("String")
+    // Should NOT contain a command link for String
+    expect(result!.value).not.toMatch(/\[\`String\`\]\(command:/)
+  })
+
+  it("shows list types with clickable links for their base type", () => {
+    const listType = new GraphQLObjectType({
+      name: "Query2",
+      fields: {
+        items: {
+          type: new GraphQLNonNull(
+            new GraphQLList(new GraphQLNonNull(warrantyItemType))
+          ),
+        },
+      },
+    })
+    const schemaWithList = new GraphQLSchema({
+      query: listType,
+      types: [warrantyItemType],
+      extensions: {
+        typeFileMap: {
+          WarrantyItem: "/app/graphql/types/warranty_item_type.rb",
+        },
+      },
+    })
+    // "query { items }"
+    //          ^-- offset 8
+    const query = "query { items }"
+    const result = buildHoverContent(schemaWithList, query, 8)
+    expect(result).not.toBeNull()
+    // The return type is [WarrantyItem!]! and should show as a link
+    expect(result!.value).toContain("warranty_item_type.rb")
+  })
+
+  it("shows non-null wrapped custom types with clickable links", () => {
+    const nonNullType = new GraphQLObjectType({
+      name: "Query3",
+      fields: {
+        item: {
+          type: new GraphQLNonNull(warrantyItemType),
+        },
+      },
+    })
+    const schemaWithNonNull = new GraphQLSchema({
+      query: nonNullType,
+      types: [warrantyItemType],
+      extensions: {
+        typeFileMap: {
+          WarrantyItem: "/app/graphql/types/warranty_item_type.rb",
+        },
+      },
+    })
+    // "query { item }"
+    //          ^-- offset 8
+    const query = "query { item }"
+    const result = buildHoverContent(schemaWithNonNull, query, 8)
+    expect(result).not.toBeNull()
+    // The return type is WarrantyItem! and should show as a link
+    expect(result!.value).toContain("warranty_item_type.rb")
+  })
+
+  it("omits typeFileMap extensions when schema has no extensions", () => {
+    const simpleType = new GraphQLObjectType({
+      name: "Simple",
+      fields: { id: { type: GraphQLString } },
+    })
+    const simpleSchema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          simple: { type: simpleType },
+        },
+      }),
+      types: [simpleType],
+    })
+    const query = "query { simple }"
+    const result = buildHoverContent(simpleSchema, query, 8)
+    expect(result).not.toBeNull()
+    // Should fall back to showing type as code without links
+    expect(result!.value).toContain("Simple")
   })
 })

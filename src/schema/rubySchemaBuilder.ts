@@ -1031,9 +1031,12 @@ export function buildGraphQLSchema(
   // Alias map: derived class name → actual graphql name
   // Handles resolver references like AgentStatsType → WarrantyAgentStats
   const aliasMap = new Map<string, string>()
+  // Map from GraphQL type name to the Ruby file where it's defined
+  const typeFileMap = new Map<string, string>()
 
   for (const td of typeDefs) {
     typeMap.set(td.name, td)
+    typeFileMap.set(td.name, td.fileName)
     // If the graphql_name differs from the class-derived name, add an alias
     if (td.classBasedName !== td.name) {
       aliasMap.set(td.classBasedName, td.name)
@@ -1629,6 +1632,10 @@ export function buildGraphQLSchema(
     query: queryType,
     mutation: mutationType,
     types,
+    extensions: {
+      // Map from GraphQL type names to their source file paths for hover tooltips
+      typeFileMap: Object.fromEntries(typeFileMap),
+    },
   })
 }
 
