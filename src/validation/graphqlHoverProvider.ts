@@ -163,6 +163,29 @@ export function buildHoverContent(
               }
               md.appendMarkdown("\n")
             }
+
+            // Resolver metadata from schema extensions
+            const ext = fieldDef.extensions as
+              | Record<string, unknown>
+              | undefined
+            if (ext?.resolverClass) {
+              md.appendMarkdown("---\n\n")
+              const resolverFile = ext.resolverFile as string | undefined
+              if (resolverFile) {
+                const link = makeFileCommandLink(
+                  String(ext.resolverClass),
+                  resolverFile
+                )
+                md.appendMarkdown(`**Resolver:** ${link}\n\n`)
+              } else {
+                md.appendMarkdown(`**Resolver:** \`${ext.resolverClass}\`\n\n`)
+              }
+              const access = ext.access as string[] | undefined
+              if (access && access.length > 0) {
+                const accessStr = access.map(a => `:${a}`).join(", ")
+                md.appendMarkdown(`**Access:** ${accessStr}\n\n`)
+              }
+            }
           } else {
             md.appendMarkdown(`**${node.name.value}**\n\n`)
             md.appendMarkdown(`**Type:** \`${typeToString(fieldType)}\`\n\n`)
@@ -199,4 +222,14 @@ function typeToString(type: GraphQLType): string {
   if (isNonNullType(type)) return `${typeToString(type.ofType)}!`
   if (isListType(type)) return `[${typeToString(type.ofType)}]`
   return (type as GraphQLNamedType).name
+}
+
+/**
+ * Build a trusted MarkdownString command link that opens a file.
+ * Holding Cmd/Ctrl and clicking the rendered link opens the file in the editor.
+ */
+export function makeFileCommandLink(label: string, filePath: string): string {
+  const fileUri = `file://${filePath}`
+  const encodedArgs = encodeURIComponent(JSON.stringify([fileUri]))
+  return `[\`${label}\`](command:vscode.open?${encodedArgs})`
 }

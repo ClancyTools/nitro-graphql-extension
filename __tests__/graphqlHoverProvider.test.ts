@@ -1,8 +1,16 @@
-import { buildSchema } from "graphql"
+import {
+  buildSchema,
+  GraphQLSchema,
+  GraphQLObjectType,
+  GraphQLString,
+  GraphQLBoolean,
+  GraphQLNonNull,
+} from "graphql"
 import {
   GraphQLTypeHoverProvider,
   lineColToOffset,
   buildHoverContent,
+  makeFileCommandLink,
 } from "../src/validation/graphqlHoverProvider"
 
 const vscode = require("vscode")
@@ -332,5 +340,159 @@ describe("GraphQLTypeHoverProvider", () => {
     // Cursor at col 2, before startColumn=4
     const hover = provider.provideHover(mockDocument(source) as any, pos(0, 2))
     expect(hover).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// makeFileCommandLink
+// ---------------------------------------------------------------------------
+
+describe("makeFileCommandLink", () => {
+  it("produces a command: markdown link", () => {
+    const link = makeFileCommandLink("MyClass", "/path/to/file.rb")
+    expect(link).toMatch(/\[`MyClass`\]\(command:vscode\.open\?/)
+  })
+
+  it("encodes the file URI in the link", () => {
+    const link = makeFileCommandLink("MyClass", "/path/to/file.rb")
+    expect(link).toContain("file%3A%2F%2F")
+    expect(link).toContain("path%2Fto%2Ffile.rb")
+  })
+
+  it("wraps the label in backticks for inline code rendering", () => {
+    const link = makeFileCommandLink("Foo::Bar::Mutation", "/a/b.rb")
+    expect(link).toMatch(/\[`Foo::Bar::Mutation`\]/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildHoverContent — resolver extensions (schema with extensions)
+// ---------------------------------------------------------------------------
+
+describe("buildHoverContent — resolver extensions", () => {
+  // Build a schema with extensions on the root fields using the GraphQL-JS API
+  const userType = new GraphQLObjectType({
+    name: "User",
+    fields: { id: { type: new GraphQLNonNull(GraphQLString) } },
+  })
+
+  const schemaWithExtensions = new GraphQLSchema({
+    query: new GraphQLObjectType({
+      name: "Query",
+      fields: {
+        createUser: {
+          type: userType,
+          args: {
+            name: { type: new GraphQLNonNull(GraphQLString) },
+          },
+          extensions: {
+            resolverClass: "Acme::Graphql::CreateUserMutation",
+            resolverFile: "/app/graphql/create_user_mutation.rb",
+            access: ["private"],
+          },
+        },
+        noResolverField: {
+          type: GraphQLString,
+        },
+      },
+    }),
+  })
+
+  it("shows resolver class in hover for root fields with extensions", () => {
+    // "query { createUser(name: \"x\") { id } }"
+    //          ^-- offset 8
+    const query = 'query { createUser(name: "x") { id } }'
+    const result = buildHoverContent(schemaWithExtensions, query, 8)
+    expect(result).not.toBeNull()
+    expect(result!.value).toContain("Acme::Graphql::CreateUserMutation")
+  })
+
+  it("resolver class is a clickable command link", () => {
+    const query = 'query { createUser(name: "x") { id } }'
+    const result = buildHoverContent(schemaWithExtensions, query, 8)
+    expect(result!.value).toContain("command:vscode.open")
+    expect(result!.value).toContain("create_user_mutation.rb")
+  })
+
+  it("shows access level in hover", () => {
+    const query = 'query { createUser(name: "x") { id } }'
+    const result = buildHoverContent(schemaWithExtensions, query, 8)
+    expect(result!.value).toContain(":private")
+  })
+
+  it("shows 'Resolver:' and 'Access:' labels", () => {
+    const query = 'query { createUser(name: "x") { id } }'
+    const result = buildHoverContent(schemaWithExtensions, query, 8)
+    expect(result!.value).toContain("Resolver:")
+    expect(result!.value).toContain("Access:")
+  })
+
+  it("omits resolver section when no extensions present", () => {
+    // noResolverField has no extensions
+    const query = "query { noResolverField }"
+    const result = buildHoverContent(schemaWithExtensions, query, 8)
+    expect(result).not.toBeNull()
+    expect(result!.value).not.toContain("Resolver:")
+    expect(result!.value).not.toContain("Access:")
+  })
+
+  it("omits access section when access array is empty", () => {
+    const noAccessType = new GraphQLObjectType({
+      name: "User2",
+      fields: { id: { type: GraphQLString } },
+    })
+    const schemaNoAccess = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          someField: {
+            type: noAccessType,
+            extensions: {
+              resolverClass: "Acme::Resolver",
+              resolverFile: "/app/resolver.rb",
+              access: [],
+            },
+          },
+        },
+      }),
+    })
+    const query = "query { someField { id } }"
+    const result = buildHoverContent(schemaNoAccess, query, 8)
+    expect(result!.value).toContain("Resolver:")
+    expect(result!.value).not.toContain("Access:")
+  })
+
+  it("shows resolver class as plain text when no resolverFile is present", () => {
+    const noFileType = new GraphQLObjectType({
+      name: "User3",
+      fields: { id: { type: GraphQLString } },
+    })
+    const schemaNoFile = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          myField: {
+            type: noFileType,
+            extensions: {
+              resolverClass: "Acme::MyResolver",
+              access: ["public"],
+            },
+          },
+        },
+      }),
+    })
+    const query = "query { myField { id } }"
+    const result = buildHoverContent(schemaNoFile, query, 8)
+    expect(result!.value).toContain("Acme::MyResolver")
+    expect(result!.value).not.toContain("command:vscode.open")
+  })
+
+  it("does not show resolver section for nested fields", () => {
+    // Extensions are only relevant on root operation fields
+    const query = 'query { createUser(name: "x") { id } }'
+    // offset of 'id' inside nested User type
+    const idOffset = query.indexOf("{ id }") + 2
+    const result = buildHoverContent(schemaWithExtensions, query, idOffset)
+    expect(result!.value).not.toContain("Resolver:")
   })
 })

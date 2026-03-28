@@ -933,6 +933,33 @@ describe("buildGraphQLSchema", () => {
     expect(field.type.toString()).toContain("WarrantyAgentStats")
   })
 
+  it("should store resolver class and access in field extensions", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        AGENT_STATS_QUERY_FIXTURE,
+        "/abs/path/agent_stats_query.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "agentStats",
+        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        target: "query",
+        access: ["private"],
+      },
+    ]
+
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const field = schema.getQueryType()!.getFields()["agentStats"]
+    const ext = field.extensions as any
+    expect(ext.resolverClass).toBe("Warranty::Graphql::AgentStatsQuery")
+    expect(ext.resolverFile).toBe("/abs/path/agent_stats_query.rb")
+    expect(ext.access).toEqual(["private"])
+  })
+
   it("should resolve PaginationType fields as non-scalar object type", () => {
     const typeDefs = [
       parseRubyTypeDefinition(PAGINATION_TYPE_FIXTURE, "pagination_type.rb")!,
@@ -1936,6 +1963,60 @@ end
     expect(registrations.length).toBe(1)
     expect(registrations[0].target).toBe("query")
     expect(registrations[0].fieldName).toBe("myQuery")
+  })
+
+  it("should parse simple symbol access level from registration field", () => {
+    const content = `
+module Foo
+  module Graphql
+    extend ::NitroGraphql::Schema::Partial
+
+    mutations do
+      field :create_thing,
+            resolver: ::Foo::Graphql::CreateThingMutation,
+            access: :private
+    end
+  end
+end
+`
+    const registrations = parseRegistrationFile(content)
+    expect(registrations.length).toBe(1)
+    expect(registrations[0].access).toEqual(["private"])
+  })
+
+  it("should parse :public access level from registration field", () => {
+    const content = `
+module Foo
+  module Graphql
+    extend ::NitroGraphql::Schema::Partial
+
+    queries do
+      field :my_query,
+            resolver: ::Foo::Graphql::MyQuery,
+            access: :public
+    end
+  end
+end
+`
+    const registrations = parseRegistrationFile(content)
+    expect(registrations[0].access).toEqual(["public"])
+  })
+
+  it("should parse access when it appears before resolver:", () => {
+    const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
+    const field = registrations.find(
+      r => r.fieldName === "accessBeforeResolver"
+    )
+    expect(field).toBeDefined()
+    expect(field!.access).toEqual(["public"])
+  })
+
+  it("should default access to private when access uses complex hash form", () => {
+    // Complex permission hashes like { Project => :create } fall back to private
+    const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
+    const field = registrations.find(r => r.fieldName === "createServiceOrder")
+    expect(field).toBeDefined()
+    expect(field!.access).toEqual(["private"])
   })
 })
 

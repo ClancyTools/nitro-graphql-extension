@@ -60,6 +60,8 @@ export interface ResolverRegistration {
   fieldName: string
   resolverClassName: string
   target: "query" | "mutation"
+  /** Access level parsed from the registration field declaration (e.g. ["private"]) */
+  access?: AccessLevel
 }
 
 export interface GraphQLTypeDefinition {
@@ -902,10 +904,13 @@ function parseRegistrationBlock(
       continue
     }
 
+    const access = parseAccessLevel(fieldBlock)
+
     registrations.push({
       fieldName: snakeToCamel(fieldName),
       resolverClassName: resolverMatch[1],
       target,
+      access,
     })
   }
 }
@@ -1517,6 +1522,13 @@ export function buildGraphQLSchema(
     const fieldConfig: any = { type: returnType }
     if (Object.keys(args).length > 0) {
       fieldConfig.args = args
+    }
+
+    // Store resolver metadata in extensions so the hover provider can surface it
+    fieldConfig.extensions = {
+      resolverClass: resolver.className,
+      resolverFile: resolver.fileName,
+      access: reg.access ?? [],
     }
 
     if (reg.target === "query") {
