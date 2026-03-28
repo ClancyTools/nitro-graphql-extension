@@ -1,6 +1,7 @@
 import * as http from "http"
 import * as fs from "fs"
 import * as path from "path"
+import * as logger from "../outputChannel"
 import { GraphQLSchema, graphql, getIntrospectionQuery } from "graphql"
 import {
   buildSchemaFromDirectory,
@@ -56,7 +57,7 @@ export class LocalSchemaServer {
     const success = await this.rebuildSchema()
 
     if (!success) {
-      console.warn(
+      logger.warn(
         "[NitroGraphQL] Initial schema build failed, server starting without schema"
       )
     }
@@ -67,7 +68,7 @@ export class LocalSchemaServer {
     // Start file watchers
     this.startFileWatchers()
 
-    console.log(
+    logger.log(
       `[NitroGraphQL] Local schema server running on port ${this.port}`
     )
   }
@@ -96,7 +97,7 @@ export class LocalSchemaServer {
       this.server = null
     }
 
-    console.log("[NitroGraphQL] Local schema server stopped")
+    logger.log("[NitroGraphQL] Local schema server stopped")
   }
 
   /**
@@ -112,14 +113,28 @@ export class LocalSchemaServer {
       this.lastBuildResult = result
       this.onSchemaRebuilt?.(result)
 
-      console.log(
-        `[NitroGraphQL] Schema rebuilt: ${result.typeCount} types, ${result.errors.length} warnings`
+      logger.log(
+        `[NitroGraphQL] Schema rebuilt: ${result.typeCount} types, ${result.resolverCount} resolvers, ${result.registrationCount} registrations, ${result.errors.length} warnings`
       )
+      const queryType = result.schema.getQueryType()
+      if (queryType) {
+        const fields = Object.keys(queryType.getFields())
+        logger.log(
+          `[NitroGraphQL] Query fields (${fields.length}): ${fields.slice(0, 30).join(", ")}${fields.length > 30 ? "..." : ""}`
+        )
+      }
+      const mutationType = result.schema.getMutationType()
+      if (mutationType) {
+        const fields = Object.keys(mutationType.getFields())
+        logger.log(
+          `[NitroGraphQL] Mutation fields (${fields.length}): ${fields.slice(0, 30).join(", ")}${fields.length > 30 ? "..." : ""}`
+        )
+      }
       return true
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
 
-      console.error(`[NitroGraphQL] Schema rebuild failed: ${err.message}`)
+      logger.error(`[NitroGraphQL] Schema rebuild failed: ${err.message}`)
       this.onError?.(err)
 
       // Keep existing schema if available
@@ -135,7 +150,7 @@ export class LocalSchemaServer {
 
       this.server.on("error", (err: NodeJS.ErrnoException) => {
         if (err.code === "EADDRINUSE") {
-          console.warn(
+          logger.warn(
             `[NitroGraphQL] Port ${this.port} in use, trying ${this.port + 1}`
           )
           this.port++
@@ -232,7 +247,7 @@ export class LocalSchemaServer {
       )
       this.fsWatchers.push(watcher)
     } catch {
-      console.warn(
+      logger.warn(
         `[NitroGraphQL] Could not watch ${watchPattern}, file watching disabled`
       )
     }
@@ -251,7 +266,7 @@ export class LocalSchemaServer {
     }
     this.rebuildTimer = setTimeout(async () => {
       this.rebuildTimer = null
-      console.log(
+      logger.log(
         "[NitroGraphQL] Ruby GraphQL file changed, rebuilding schema..."
       )
       await this.rebuildSchema()

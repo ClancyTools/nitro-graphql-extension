@@ -133,16 +133,64 @@ function skipInterpolation(text: string, startOffset: number): number {
 }
 
 /**
- * Replace ${...} interpolations with blank lines of the same length
- * to preserve line numbering for GraphQL error reporting.
+ * Replace ${...} interpolations so the surrounding GraphQL remains parseable.
+ *
+ * Behaviour depends on the GraphQL brace depth at the interpolation site:
+ * - Inside a selection set (depth > 0): replace with `__typename` so the
+ *   selection set stays structurally valid.
+ * - At document level (depth = 0): the interpolation is almost always an
+ *   imported fragment document.  Remove it entirely (preserve newlines) — the
+ *   validator will still see any `...fragmentName` spread in the query, and
+ *   we suppress KnownFragmentNamesRule separately to avoid false positives
+ *   for cross-file fragments.
  */
 function replaceInterpolations(queryText: string): string {
-  // Replace ${...} with equivalent whitespace to preserve positions
-  return queryText.replace(/\$\{[^}]*\}/g, match => {
-    // Replace with spaces of the same length to preserve column offsets
-    // But if it contains newlines, preserve those
-    return match.replace(/[^\n]/g, " ")
-  })
+  const out: string[] = []
+  let braceDepth = 0
+  let i = 0
+
+  while (i < queryText.length) {
+    const ch = queryText[i]
+
+    if (ch === "{") {
+      braceDepth++
+      out.push(ch)
+      i++
+    } else if (ch === "}") {
+      braceDepth--
+      out.push(ch)
+      i++
+    } else if (
+      ch === "$" &&
+      i + 1 < queryText.length &&
+      queryText[i + 1] === "{"
+    ) {
+      // Find the matching closing } of the interpolation
+      let j = i + 2
+      let depth = 1
+      while (j < queryText.length && depth > 0) {
+        if (queryText[j] === "{") depth++
+        else if (queryText[j] === "}") depth--
+        j++
+      }
+      const match = queryText.slice(i, j)
+      const newlines = (match.match(/\n/g) || []).length
+
+      if (braceDepth === 0) {
+        // Document-level interpolation — remove content, preserve newlines only
+        out.push("\n".repeat(newlines))
+      } else {
+        // Selection-set-level interpolation — substitute a valid field
+        out.push("__typename" + "\n".repeat(newlines))
+      }
+      i = j
+    } else {
+      out.push(ch)
+      i++
+    }
+  }
+
+  return out.join("")
 }
 
 /**

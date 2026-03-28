@@ -42,6 +42,13 @@ module LearningDojo
       field :handouts, [::LearningDojo::Graphql::HandoutType]
       field :tag_list, [String], null: false
       field :track_time, Boolean, null: false
+
+      belongs_to :instructor, ::Directory::Graphql::EmployeeType, null: false
+      belongs_to :category, ::LearningDojo::Graphql::CategoryType
+      has_one :certificate, ::LearningDojo::Graphql::CertificateType
+      has_one :featured_review, ::LearningDojo::Graphql::ReviewType, null: false
+      has_many :enrollments, [::LearningDojo::Graphql::EnrollmentType]
+      has_many :course_tags, [::LearningDojo::Graphql::CourseTagType], null: false
     end
   end
 end
@@ -304,6 +311,10 @@ module Warranty
       field :count_incoming_calls,
             resolver: ::Warranty::Graphql::CountIncomingCallsQuery,
             access: { ::CustomerSupport::ServiceCall => :take }
+
+      field :access_before_resolver,
+            access: :public,
+            resolver: ::Warranty::Graphql::AgentStatsQuery
     end
 
     mutations do
@@ -330,6 +341,107 @@ module Warranty
       value "proposed"
       value "canceled"
       value "submitted"
+    end
+  end
+end
+`
+
+const PAGINATION_TYPE_FIXTURE = `
+module NitroGraphql
+  module Types
+    class PaginationType < NitroGraphql::Types::BaseObject
+      field :current_page, Integer, null: false
+      field :total_pages, Integer, null: false
+      field :total_entries, Integer, null: false
+    end
+  end
+end
+`
+
+const PHONE_NUMBER_TYPE_FIXTURE = `
+module NitroGraphql
+  module CoreModels
+    class PhoneNumberType < NitroGraphql::Types::BaseObject
+      graphql_name "PhoneNumber"
+      field :id, ID, null: false
+      field :number, String, null: false
+      field :number_type, String, null: false
+    end
+  end
+end
+`
+
+const PROJECT_TASK_TYPE_FIXTURE = `
+module CoreModels
+  module Graphql
+    class ProjectTaskType < NitroGraphql::Types::BaseObject
+      graphql_name "ProjectTask"
+
+      field :id, ID, null: false
+      field :scheduled_date, String
+      field :require_lead_safe_install, Boolean, null: false
+      belongs_to :project, ::CoreModels::Graphql::ProjectType
+      belongs_to :product, ::CoreModels::Graphql::ProductType
+      belongs_to :inspection_appointment, ::CoreModels::Graphql::AppointmentType
+    end
+  end
+end
+`
+
+const SERVICE_TASK_TYPE_FIXTURE = `
+module Warranty
+  module Graphql
+    class ServiceTaskType < CoreModels::Graphql::ProjectTaskType
+      graphql_name "WarantyServiceTask"
+
+      field :warehouse, String
+      field :pulse_enabled_homeowner_ids, [ID]
+      field :active_service_quote, Warranty::Graphql::ServiceQuoteType
+    end
+  end
+end
+`
+
+const POINT_OF_INTEREST_INPUT_TYPE_FIXTURE = `
+module NitroGis
+  module Graphql
+    class PointOfInterestInputType < NitroGraphql::Types::BaseInputObject
+      graphql_name "PointOfInterestInput"
+
+      argument :name, String, required: false
+      argument :latitude, Float, required: true
+      argument :longitude, Float, required: true
+    end
+  end
+end
+`
+
+const TERRITORY_ZONE_INPUT_TYPE_FIXTURE = `
+module TerritoryMaps
+  module Graphql
+    class TerritoryExpansionCollectionZoneInputType < ::NitroGis::Graphql::PointOfInterestInputType
+      graphql_name "TerritoryExpansionCollectionZoneInput"
+
+      argument :id, ID, required: false
+      argument :detail_name, String, required: false
+      argument :color, String, required: false
+    end
+  end
+end
+`
+
+const MODULE_INTERFACE_FIXTURE = `
+module Warranty
+  module Graphql
+    module ServiceQuoteItemItemInterface
+      include NitroGraphql::Types::BaseInterface
+
+      field :id, ID, null: false
+      field :model, String
+      field :color, String
+      field :serial_number, String
+
+      belongs_to :product, ::CoreModels::Graphql::ProductType, null: false
     end
   end
 end
@@ -464,8 +576,106 @@ end
 
   it("should map Integer to Int", () => {
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
-    const prereqField = def.fields.find(f => f.name === "prerequisite_id")
+    const prereqField = def.fields.find(f => f.name === "prerequisiteId")
     expect(prereqField!.type).toBe("Int")
+  })
+
+  it("should parse belongs_to as a non-list field in camelCase", () => {
+    const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
+    const instructorField = def.fields.find(f => f.name === "instructor")
+    expect(instructorField).toBeDefined()
+    expect(instructorField!.type).toBe("Employee")
+    expect(instructorField!.isList).toBe(false)
+    expect(instructorField!.nullable).toBe(false)
+
+    const categoryField = def.fields.find(f => f.name === "category")
+    expect(categoryField).toBeDefined()
+    expect(categoryField!.type).toBe("Category")
+    expect(categoryField!.isList).toBe(false)
+    expect(categoryField!.nullable).toBe(true)
+  })
+
+  it("should parse has_one as a non-list field in camelCase", () => {
+    const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
+    const certField = def.fields.find(f => f.name === "certificate")
+    expect(certField).toBeDefined()
+    expect(certField!.type).toBe("Certificate")
+    expect(certField!.isList).toBe(false)
+    expect(certField!.nullable).toBe(true)
+
+    const reviewField = def.fields.find(f => f.name === "featuredReview")
+    expect(reviewField).toBeDefined()
+    expect(reviewField!.type).toBe("Review")
+    expect(reviewField!.isList).toBe(false)
+    expect(reviewField!.nullable).toBe(false)
+  })
+
+  it("should parse has_many as a list field in camelCase", () => {
+    const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
+    const enrollmentsField = def.fields.find(f => f.name === "enrollments")
+    expect(enrollmentsField).toBeDefined()
+    expect(enrollmentsField!.type).toBe("Enrollment")
+    expect(enrollmentsField!.isList).toBe(true)
+
+    const courseTagsField = def.fields.find(f => f.name === "courseTags")
+    expect(courseTagsField).toBeDefined()
+    expect(courseTagsField!.type).toBe("CourseTag")
+    expect(courseTagsField!.isList).toBe(true)
+  })
+
+  it("should parse type that inherits from a custom Type class", () => {
+    const def = parseRubyTypeDefinition(
+      SERVICE_TASK_TYPE_FIXTURE,
+      "service_task_type.rb"
+    )
+    expect(def).not.toBeNull()
+    expect(def!.kind).toBe("object")
+    expect(def!.name).toBe("WarantyServiceTask")
+    // Own fields should be present
+    const warehouseField = def!.fields.find(f => f.name === "warehouse")
+    expect(warehouseField).toBeDefined()
+  })
+
+  it("should parse InputType inheritance as kind input", () => {
+    const def = parseRubyTypeDefinition(
+      TERRITORY_ZONE_INPUT_TYPE_FIXTURE,
+      "territory_zone_input_type.rb"
+    )
+    expect(def).not.toBeNull()
+    expect(def!.kind).toBe("input")
+    expect(def!.name).toBe("TerritoryExpansionCollectionZoneInput")
+  })
+
+  it("should parse argument declarations on input type as fields", () => {
+    const def = parseRubyTypeDefinition(
+      POINT_OF_INTEREST_INPUT_TYPE_FIXTURE,
+      "point_of_interest_input_type.rb"
+    )!
+    const nameField = def.fields.find(f => f.name === "name")
+    expect(nameField).toBeDefined()
+    expect(nameField!.type).toBe("String")
+    expect(nameField!.nullable).toBe(true) // required: false
+
+    const latField = def.fields.find(f => f.name === "latitude")
+    expect(latField).toBeDefined()
+    expect(latField!.nullable).toBe(false) // required: true
+  })
+
+  it("should parse module-based interface (include BaseInterface)", () => {
+    const def = parseRubyTypeDefinition(
+      MODULE_INTERFACE_FIXTURE,
+      "service_quote_item_item_interface.rb"
+    )
+    expect(def).not.toBeNull()
+    expect(def!.kind).toBe("interface")
+    // deriveTypeName does not strip "Interface" suffix, only "Type"
+    expect(def!.name).toBe("ServiceQuoteItemItemInterface")
+    // Should have parsed its fields
+    const idField = def!.fields.find(f => f.name === "id")
+    expect(idField).toBeDefined()
+    const productField = def!.fields.find(f => f.name === "product")
+    expect(productField).toBeDefined()
+    expect(productField!.type).toBe("Product")
   })
 })
 
@@ -722,6 +932,548 @@ describe("buildGraphQLSchema", () => {
     // The return type should be a list (non-null list of non-null WarrantyAgentStats)
     expect(field.type.toString()).toContain("WarrantyAgentStats")
   })
+
+  it("should resolve PaginationType fields as non-scalar object type", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(PAGINATION_TYPE_FIXTURE, "pagination_type.rb")!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+    // PaginationType class → deriveTypeName strips "Type" → registered as "Pagination"
+    const paginationType = schema.getType("Pagination")
+    expect(paginationType).toBeDefined()
+    const fields = (paginationType as any).getFields()
+    expect(fields["currentPage"]).toBeDefined()
+    expect(fields["totalPages"]).toBeDefined()
+    expect(fields["totalEntries"]).toBeDefined()
+  })
+
+  it("should use graphql_name alias when resolving PhoneNumberType", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        PHONE_NUMBER_TYPE_FIXTURE,
+        "phone_number_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+    // PhoneNumberType has graphql_name "PhoneNumber", so it should be accessible as "PhoneNumber"
+    const phoneType = schema.getType("PhoneNumber")
+    expect(phoneType).toBeDefined()
+    const fields = (phoneType as any).getFields()
+    expect(fields["number"]).toBeDefined()
+    expect(fields["numberType"]).toBeDefined()
+  })
+
+  it("should use graphql_name alias when resolving PhoneNumberType", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        PHONE_NUMBER_TYPE_FIXTURE,
+        "phone_number_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+    // PhoneNumberType has graphql_name "PhoneNumber", so it should be accessible as "PhoneNumber"
+    const phoneType = schema.getType("PhoneNumber")
+    expect(phoneType).toBeDefined()
+    const fields = (phoneType as any).getFields()
+    expect(fields["number"]).toBeDefined()
+    expect(fields["numberType"]).toBeDefined()
+  })
+
+  it("should NOT redirect type lookup through aliasMap when the name is itself a canonical graphql_name", () => {
+    // EmployeeType (Directory) has graphql_name "Employee".
+    // EmployeeType (EmployeeReviews) inherits from it with graphql_name "ReviewEmployee".
+    // Both have classBasedName "Employee", so aliasMap["Employee"] = "ReviewEmployee".
+    // A resolver that returns ::Directory::Graphql::EmployeeType normalizes to "Employee",
+    // which must resolve to the real Employee type — NOT ReviewEmployee.
+    const directoryEmployeeType = parseRubyTypeDefinition(
+      `
+module Directory
+  module Graphql
+    class EmployeeType < NitroGraphql::Types::BaseObject
+      graphql_name "Employee"
+      field :id, ID, null: false
+      field :goes_by_with_last_name, String, null: false
+    end
+  end
+end
+`,
+      "directory/employee_type.rb"
+    )!
+
+    const reviewEmployeeType = parseRubyTypeDefinition(
+      `
+module EmployeeReviews
+  module Graphql
+    class EmployeeType < ::Directory::Graphql::EmployeeType
+      graphql_name "ReviewEmployee"
+      description "An employee in the context of a review."
+    end
+  end
+end
+`,
+      "employee_reviews/employee_type.rb"
+    )!
+
+    const userQueryResolver = parseResolverDefinition(
+      `
+module UserProfile
+  module Graphql
+    class UserQuery < NitroGraphql::BaseQuery
+      type ::Directory::Graphql::EmployeeType, null: false
+      argument :id, Integer, required: false
+      def resolve(id:); end
+    end
+  end
+end
+`,
+      "user_profile/user_query.rb"
+    )!
+
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "user",
+        resolverClassName: "::UserProfile::Graphql::UserQuery",
+        target: "query",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(
+      [directoryEmployeeType, reviewEmployeeType],
+      [userQueryResolver],
+      registrations
+    )
+
+    const queryType = schema.getQueryType()!
+    const userField = queryType.getFields()["user"]
+    expect(userField).toBeDefined()
+
+    // The return type must be Employee, not ReviewEmployee
+    const returnTypeName =
+      (userField.type as any).name ?? (userField.type as any).ofType?.name
+    expect(returnTypeName).toBe("Employee")
+
+    // The Employee type must have goesByWithLastName
+    const employeeType = schema.getType("Employee") as any
+    expect(employeeType).toBeDefined()
+    expect(employeeType.getFields()["goesByWithLastName"]).toBeDefined()
+
+    // ReviewEmployee must still exist as a separate type
+    const reviewType = schema.getType("ReviewEmployee")
+    expect(reviewType).toBeDefined()
+  })
+
+  it("should inherit fields from parent type", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        PROJECT_TASK_TYPE_FIXTURE,
+        "project_task_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        SERVICE_TASK_TYPE_FIXTURE,
+        "service_task_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+    // ServiceTaskType inherits from ProjectTaskType
+    const serviceTaskType = schema.getType("WarantyServiceTask")
+    expect(serviceTaskType).toBeDefined()
+    const fields = (serviceTaskType as any).getFields()
+    // Own fields
+    expect(fields["warehouse"]).toBeDefined()
+    expect(fields["pulseEnabledHomeownerIds"]).toBeDefined()
+    // Inherited from ProjectTaskType
+    expect(fields["id"]).toBeDefined()
+    expect(fields["scheduledDate"]).toBeDefined()
+    expect(fields["project"]).toBeDefined()
+    expect(fields["inspectionAppointment"]).toBeDefined()
+  })
+
+  it("should build input type inheriting from another InputType", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        POINT_OF_INTEREST_INPUT_TYPE_FIXTURE,
+        "poi_input.rb"
+      )!,
+      parseRubyTypeDefinition(
+        TERRITORY_ZONE_INPUT_TYPE_FIXTURE,
+        "zone_input.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    // Should build schema without throwing "must be Input Type" error
+    expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
+    const schema = buildGraphQLSchema(typeDefs)
+    const zoneInput = schema.getType("TerritoryExpansionCollectionZoneInput")
+    expect(zoneInput).toBeDefined()
+    const fields = (zoneInput as any).getFields()
+    // Own arguments
+    expect(fields["id"]).toBeDefined()
+    expect(fields["color"]).toBeDefined()
+    // Inherited from PointOfInterestInputType
+    expect(fields["name"]).toBeDefined()
+    expect(fields["latitude"]).toBeDefined()
+    expect(fields["longitude"]).toBeDefined()
+  })
+
+  it("should register module-based interface and resolve field types that reference it", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(MODULE_INTERFACE_FIXTURE, "item_interface.rb")!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
+    const schema = buildGraphQLSchema(typeDefs)
+    // Registered under the full module name (Interface suffix kept by deriveTypeName)
+    const ifaceType = schema.getType("ServiceQuoteItemItemInterface")
+    expect(ifaceType).toBeDefined()
+    // Its fields should be accessible (id, model, product)
+    const fields = (ifaceType as any).getFields()
+    expect(fields["id"]).toBeDefined()
+    expect(fields["model"]).toBeDefined()
+    expect(fields["product"]).toBeDefined()
+  })
+
+  it("should parse a union type (BaseUnion) with possible_types", () => {
+    const def = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ItemableType < NitroGraphql::Types::BaseUnion
+      graphql_name "WarrantyItemableType"
+      possible_types ServiceQuoteItemType, ServiceQuoteNonItemType
+    end
+  end
+end
+`,
+      "itemable_type.rb"
+    )
+    expect(def).not.toBeNull()
+    expect(def!.kind).toBe("union")
+    expect(def!.name).toBe("WarrantyItemableType")
+    expect(def!.possibleTypes).toEqual([
+      "ServiceQuoteItem",
+      "ServiceQuoteNonItem",
+    ])
+  })
+
+  it("should parse a union type with parenthesised multiline possible_types", () => {
+    const def = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ItemableType < NitroGraphql::Types::BaseUnion
+      graphql_name "WarrantyItemableType"
+      possible_types(
+        ::Warranty::Graphql::ServiceQuoteItemType,
+        ::Warranty::Graphql::ServiceQuoteNonItemType
+      )
+    end
+  end
+end
+`,
+      "itemable_type.rb"
+    )
+    expect(def).not.toBeNull()
+    expect(def!.kind).toBe("union")
+    expect(def!.possibleTypes).toEqual([
+      "ServiceQuoteItem",
+      "ServiceQuoteNonItem",
+    ])
+  })
+
+  it("should build a union type in the schema and allow inline fragment spreads", () => {
+    const serviceQuoteItemType = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ServiceQuoteItemType < NitroGraphql::Types::BaseObject
+      graphql_name "ServiceQuoteItemType"
+      field :id, ID, null: false
+      field :item_charge, Float
+    end
+  end
+end
+`,
+      "service_quote_item_type.rb"
+    )!
+
+    const serviceQuoteNonItemType = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ServiceQuoteNonItemType < NitroGraphql::Types::BaseObject
+      graphql_name "ServiceQuoteNonItemType"
+      field :id, ID, null: false
+      field :name, String
+    end
+  end
+end
+`,
+      "service_quote_non_item_type.rb"
+    )!
+
+    const itemableUnion = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ItemableType < NitroGraphql::Types::BaseUnion
+      graphql_name "WarrantyItemableType"
+      possible_types ServiceQuoteItemType, ServiceQuoteNonItemType
+    end
+  end
+end
+`,
+      "itemable_type.rb"
+    )!
+
+    expect(itemableUnion.kind).toBe("union")
+    expect(itemableUnion.possibleTypes).toEqual([
+      "ServiceQuoteItem",
+      "ServiceQuoteNonItem",
+    ])
+
+    const typeDefs = [
+      serviceQuoteItemType,
+      serviceQuoteNonItemType,
+      itemableUnion,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
+    const schema = buildGraphQLSchema(typeDefs)
+
+    // Union type itself should be in the schema
+    const unionType = schema.getType("WarrantyItemableType")
+    expect(unionType).toBeDefined()
+    expect(unionType).toBeInstanceOf(require("graphql").GraphQLUnionType)
+
+    // The member types should be accessible
+    const memberNames = (unionType as any).getTypes().map((t: any) => t.name)
+    expect(memberNames).toContain("ServiceQuoteItemType")
+    expect(memberNames).toContain("ServiceQuoteNonItemType")
+  })
+
+  it("should parse inline field arguments from do...end blocks on interface fields", () => {
+    const def = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    module ServiceQuoteItemItemInterface
+      include NitroGraphql::Types::BaseInterface
+
+      field :id, ID, null: false
+      field :media_items, [String], access: %i[private customer] do
+        argument :document_type_code, [String], required: false
+      end
+    end
+  end
+end
+`,
+      "service_quote_item_item_interface.rb"
+    )!
+
+    expect(def.kind).toBe("interface")
+    const mediaField = def.fields.find(f => f.name === "mediaItems")
+    expect(mediaField).toBeDefined()
+    expect(mediaField!.fieldArgs).toBeDefined()
+    expect(mediaField!.fieldArgs!.length).toBe(1)
+    expect(mediaField!.fieldArgs![0].name).toBe("documentTypeCode")
+    expect(mediaField!.fieldArgs![0].isList).toBe(true)
+    expect(mediaField!.fieldArgs![0].required).toBe(false)
+  })
+
+  it("should include field args in built interface type so queries can use them", () => {
+    const ifaceTypeDef = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    module ServiceQuoteItemItemInterface
+      include NitroGraphql::Types::BaseInterface
+
+      field :id, ID, null: false
+      field :media_items, [String], access: %i[private customer] do
+        argument :document_type_code, [String], required: false
+      end
+    end
+  end
+end
+`,
+      "service_quote_item_item_interface.rb"
+    )!
+
+    const typeDefs = [
+      ifaceTypeDef,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
+    ]
+    expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
+    const schema = buildGraphQLSchema(typeDefs)
+
+    const ifaceType = schema.getType("ServiceQuoteItemItemInterface") as any
+    expect(ifaceType).toBeDefined()
+    const mediaItemsField = ifaceType.getFields()["mediaItems"]
+    expect(mediaItemsField).toBeDefined()
+    // The field must expose the documentTypeCode argument
+    const argNames = mediaItemsField.args.map((a: any) => a.name)
+    expect(argNames).toContain("documentTypeCode")
+  })
+})
+
+describe("resolver namespace collision", () => {
+  it("should pick the correct resolver when two namespaces define the same class name", () => {
+    // Reproduces the real case:
+    //   field :pending_proposed_warranty_item_changes,
+    //         resolver: ::Warranty::Graphql::PendingProposedItemChangesQuery
+    //
+    // Two components both have a resolver named PendingProposedItemChangesQuery
+    // but in different namespaces with different arguments.  The field name has
+    // "warranty" in it but the class name does not — make sure that does not
+    // confuse the matching and that the explicit resolver: path wins.
+
+    const warrantyResolver = parseResolverDefinition(
+      `
+module Warranty
+  module Graphql
+    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+      type [::Warranty::Graphql::ProposedItemChangeType], null: true
+
+      argument :service_quote_id, ID
+
+      def resolve(service_quote_id:)
+      end
+    end
+  end
+end
+`,
+      "warranty/pending_proposed_item_changes_query.rb"
+    )!
+
+    const projectsResolver = parseResolverDefinition(
+      `
+module Projects
+  module Graphql
+    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+      type [String], null: true
+
+      argument :project_id, ID
+      argument :product_id, ID
+
+      def resolve(project_id:, product_id:)
+      end
+    end
+  end
+end
+`,
+      "projects/pending_proposed_item_changes_query.rb"
+    )!
+
+    expect(warrantyResolver.className).toBe(
+      "Warranty::Graphql::PendingProposedItemChangesQuery"
+    )
+    expect(projectsResolver.className).toBe(
+      "Projects::Graphql::PendingProposedItemChangesQuery"
+    )
+
+    const proposedItemChangeType = parseRubyTypeDefinition(
+      `
+module Warranty
+  module Graphql
+    class ProposedItemChangeType < NitroGraphql::Types::BaseObject
+      field :id, ID, null: false
+    end
+  end
+end
+`,
+      "proposed_item_change_type.rb"
+    )!
+
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "pendingProposedWarrantyItemChanges",
+        resolverClassName:
+          "::Warranty::Graphql::PendingProposedItemChangesQuery",
+        target: "query",
+      },
+    ]
+
+    // Pass both resolvers — Projects resolver must NOT win
+    const schema = buildGraphQLSchema(
+      [proposedItemChangeType],
+      [warrantyResolver, projectsResolver],
+      registrations
+    )
+
+    const queryType = schema.getQueryType()!
+    const field = queryType.getFields()["pendingProposedWarrantyItemChanges"]
+    expect(field).toBeDefined()
+
+    const argNames = field.args.map(a => a.name)
+    // Must have serviceQuoteId from the Warranty resolver
+    expect(argNames).toContain("serviceQuoteId")
+    // Must NOT have projectId / productId from the Projects resolver
+    expect(argNames).not.toContain("projectId")
+    expect(argNames).not.toContain("productId")
+  })
+
+  it("should also pick correct resolver when Projects resolver is inserted first in map order", () => {
+    const warrantyResolver = parseResolverDefinition(
+      `
+module Warranty
+  module Graphql
+    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+      type [String], null: true
+      argument :service_quote_id, ID
+      def resolve(service_quote_id:); end
+    end
+  end
+end
+`,
+      "warranty/pending_proposed_item_changes_query.rb"
+    )!
+
+    const projectsResolver = parseResolverDefinition(
+      `
+module Projects
+  module Graphql
+    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+      type [String], null: true
+      argument :project_id, ID
+      argument :product_id, ID
+      def resolve(project_id:, product_id:); end
+    end
+  end
+end
+`,
+      "projects/pending_proposed_item_changes_query.rb"
+    )!
+
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "pendingProposedWarrantyItemChanges",
+        // leading :: is stripped during matching
+        resolverClassName:
+          "::Warranty::Graphql::PendingProposedItemChangesQuery",
+        target: "query",
+      },
+    ]
+
+    // Projects resolver passed first — must still resolve to Warranty
+    const schema = buildGraphQLSchema(
+      [],
+      [projectsResolver, warrantyResolver],
+      registrations
+    )
+
+    const queryType = schema.getQueryType()!
+    const field = queryType.getFields()["pendingProposedWarrantyItemChanges"]
+    expect(field).toBeDefined()
+
+    const argNames = field.args.map(a => a.name)
+    expect(argNames).toContain("serviceQuoteId")
+    expect(argNames).not.toContain("projectId")
+    expect(argNames).not.toContain("productId")
+  })
 })
 
 describe("validateSchemaIntegrity", () => {
@@ -781,6 +1533,32 @@ describe("findGraphQLDirectories", () => {
   it("should return empty array for empty directory", () => {
     const dirs = findGraphQLDirectories(tmpDir)
     expect(dirs).toEqual([])
+  })
+
+  it("should find types directories under lib/ paths", () => {
+    // Create: components/nitro_graphql/lib/nitro_graphql/types/
+    const typesDir = path.join(
+      tmpDir,
+      "components",
+      "nitro_graphql",
+      "lib",
+      "nitro_graphql",
+      "types"
+    )
+    fs.mkdirSync(typesDir, { recursive: true })
+
+    const dirs = findGraphQLDirectories(tmpDir)
+    expect(dirs.some(d => d.endsWith("types"))).toBe(true)
+  })
+
+  it("should not include types directories outside lib/ paths", () => {
+    // Create: components/foo/app/types/ (no lib/ in path)
+    const typesDir = path.join(tmpDir, "components", "foo", "app", "types")
+    fs.mkdirSync(typesDir, { recursive: true })
+
+    const dirs = findGraphQLDirectories(tmpDir)
+    // Should not pick up this types dir (not under lib/)
+    expect(dirs.some(d => d.includes("app/types"))).toBe(false)
   })
 })
 
@@ -1087,13 +1865,23 @@ describe("parseArguments", () => {
 describe("parseRegistrationFile", () => {
   it("should parse queries and mutations from registration file", () => {
     const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
-    expect(registrations.length).toBe(6)
+    expect(registrations.length).toBe(7)
 
     const queries = registrations.filter(r => r.target === "query")
-    expect(queries.length).toBe(3)
+    expect(queries.length).toBe(4)
 
     const mutations = registrations.filter(r => r.target === "mutation")
     expect(mutations.length).toBe(3)
+  })
+
+  it("should parse field when access: appears before resolver:", () => {
+    const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
+    const field = registrations.find(
+      r => r.fieldName === "accessBeforeResolver"
+    )
+    expect(field).toBeDefined()
+    expect(field!.resolverClassName).toContain("AgentStatsQuery")
+    expect(field!.target).toBe("query")
   })
 
   it("should convert field names to camelCase", () => {

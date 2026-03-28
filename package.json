@@ -39,6 +39,10 @@
       {
         "command": "nitroGraphql.showSchemaStatus",
         "title": "Nitro GraphQL: Show Schema Status"
+      },
+      {
+        "command": "nitroGraphql.showLogs",
+        "title": "Nitro GraphQL: Show Logs"
       }
     ],
     "configuration": {

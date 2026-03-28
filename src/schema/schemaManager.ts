@@ -1,4 +1,5 @@
 import { GraphQLSchema } from "graphql"
+import * as logger from "../outputChannel"
 import { CacheManager } from "../cache/cacheManager"
 import {
   LocalSchemaServer,
@@ -83,7 +84,7 @@ export class SchemaManager {
             this.setStatus("error", `Schema build failed: ${error.message}`)
           } else {
             // Keep using existing schema
-            console.warn(
+            logger.warn(
               `[NitroGraphQL] Schema rebuild failed, keeping previous schema: ${error.message}`
             )
           }
@@ -107,7 +108,7 @@ export class SchemaManager {
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      console.error(`[NitroGraphQL] Failed to start schema server: ${msg}`)
+      logger.error(`[NitroGraphQL] Failed to start schema server: ${msg}`)
       this.setStatus("error", `Schema build failed: ${msg}`)
     }
   }

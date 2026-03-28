@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import * as logger from "./outputChannel"
 import { SchemaManager } from "./schema/schemaManager"
 import { CacheManager } from "./cache/cacheManager"
 import { findGraphQLTemplates } from "./validation/queryFinder"
@@ -28,18 +29,19 @@ const SUPPORTED_LANGUAGES = [
 ]
 
 export function activate(context: vscode.ExtensionContext): void {
-  console.log("[NitroGraphQL] Extension activating...")
+  logger.initOutputChannel(context)
+  logger.log("[NitroGraphQL] Extension activating...")
 
   const config = vscode.workspace.getConfiguration("nitroGraphql")
   if (!config.get<boolean>("enabled", true)) {
-    console.log("[NitroGraphQL] Extension disabled via settings.")
+    logger.log("[NitroGraphQL] Extension disabled via settings.")
     return
   }
 
   // Determine workspace root (where Ruby GraphQL files live)
   const workspaceFolders = vscode.workspace.workspaceFolders
   if (!workspaceFolders || workspaceFolders.length === 0) {
-    console.warn("[NitroGraphQL] No workspace folder open.")
+    logger.warn("[NitroGraphQL] No workspace folder open.")
     return
   }
   const basePath = workspaceFolders[0].uri.fsPath
@@ -127,7 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     },
     onSchemaFileChanged: () => {
-      console.log(
+      logger.log(
         "[NitroGraphQL] GraphQL Ruby file changed, rebuilding schema..."
       )
       schemaManager?.refresh()
@@ -188,6 +190,12 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   )
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nitroGraphql.showLogs", () => {
+      logger.showChannel()
+    })
+  )
+
   context.subscriptions.push({ dispose: () => statusBarItem?.dispose() })
   context.subscriptions.push({ dispose: () => schemaManager?.dispose() })
 
@@ -201,7 +209,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  console.log("[NitroGraphQL] Extension activated.")
+  logger.log("[NitroGraphQL] Extension activated.")
 }
 
 function validateDocument(document: vscode.TextDocument): void {
@@ -253,7 +261,7 @@ function revalidateAllOpenDocuments(): void {
 }
 
 export function deactivate(): void {
-  console.log("[NitroGraphQL] Extension deactivating...")
+  logger.log("[NitroGraphQL] Extension deactivating...")
   for (const timer of validationDebounceTimers.values()) {
     clearTimeout(timer)
   }

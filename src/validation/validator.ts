@@ -2,6 +2,9 @@ import {
   GraphQLSchema,
   parse,
   validate,
+  specifiedRules,
+  NoUnusedFragmentsRule,
+  KnownFragmentNamesRule,
   GraphQLError,
   DocumentNode,
 } from "graphql"
@@ -80,8 +83,19 @@ export function validateTemplate(
     return { template, errors }
   }
 
-  // Step 2: Validate against schema
-  const validationErrors = validate(schema, document)
+  // Step 2: Validate against schema.
+  // Exclude NoUnusedFragmentsRule: fragments may be defined in one file and
+  // imported/spread in another (common with exported `gql` fragments), so
+  // a "never used" error here is almost always a false positive.
+  // Exclude KnownFragmentNamesRule: fragment definitions are frequently
+  // imported from other files via `${FRAGMENT_DOC}` interpolation; we cannot
+  // resolve cross-file imports statically, so unknown-fragment errors would
+  // be false positives.  Field-level errors (wrong fields on the fragment
+  // type) are still caught by other rules.
+  const rules = specifiedRules.filter(
+    r => r !== NoUnusedFragmentsRule && r !== KnownFragmentNamesRule
+  )
+  const validationErrors = validate(schema, document, rules)
 
   for (const error of validationErrors) {
     const loc = error.locations?.[0]
