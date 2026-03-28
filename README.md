@@ -24,7 +24,7 @@ Real-time GraphQL query/mutation validation for nitro-web's CoBRA (Component-Bas
 Open VS Code settings and search for "Nitro GraphQL":
 
 | Setting | Default | Description |
-|---------|---------|-------------|
+| --------- | --------- | ------------- |
 | `nitroGraphql.endpoint` | `http://localhost:3000/graphql` | GraphQL endpoint URL |
 | `nitroGraphql.pollingInterval` | `30000` | Schema poll interval in ms (0 to disable) |
 | `nitroGraphql.validationDebounce` | `300` | Validation debounce delay in ms |
