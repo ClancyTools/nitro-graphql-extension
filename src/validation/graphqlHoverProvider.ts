@@ -205,6 +205,10 @@ export function buildHoverContent(
           } else {
             md.appendMarkdown(`**${node.name.value}**\n\n`)
 
+            if (fieldDef.description) {
+              md.appendMarkdown(`${fieldDef.description}\n\n`)
+            }
+
             // Build type display with potential clickable link for custom types
             const typeString = typeToString(fieldType)
             const baseTypeName = getBaseTypeName(fieldType)
@@ -231,6 +235,17 @@ export function buildHoverContent(
               md.appendMarkdown(`**On:** \`${parentType.name}\`\n\n`)
             }
 
+            // Show base type description if it's different from the field type
+            // (e.g., for list fields, show the item type's description)
+            if (baseTypeName) {
+              const baseTypeDesc = getTypeDescription(schema, baseTypeName)
+              if (baseTypeDesc && baseTypeName !== parentType.name) {
+                md.appendMarkdown(
+                  `**Item Type:** ${baseTypeName}\n\n${baseTypeDesc}\n\n`
+                )
+              }
+            }
+
             if (fieldDef.args.length > 0) {
               md.appendMarkdown(`**Arguments:**\n\n`)
               for (const arg of fieldDef.args) {
@@ -245,7 +260,8 @@ export function buildHoverContent(
             }
           }
 
-          if (fieldDef.description) {
+          // For root fields (queries/mutations), show description at the end
+          if (isRootField && fieldDef.description) {
             md.appendMarkdown(`---\n\n${fieldDef.description}`)
           }
 
@@ -286,6 +302,18 @@ function getTypeFilePath(
   const ext = schema.extensions as Record<string, unknown> | undefined
   const typeFileMap = ext?.typeFileMap as Record<string, string> | undefined
   return (typeFileMap && typeFileMap[typeName]) || null
+}
+
+/**
+ * Get the description for a named type from the schema.
+ * Returns null if the type is not found or has no description.
+ */
+function getTypeDescription(
+  schema: GraphQLSchema,
+  typeName: string
+): string | null {
+  const type = schema.getType(typeName)
+  return (type && "description" in type && type.description) || null
 }
 
 /**

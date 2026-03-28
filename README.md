@@ -5,21 +5,21 @@ Real-time GraphQL query/mutation validation for nitro-web's CoBRA (Component-Bas
 ## Features
 
 - **Real-time validation** — Red squiggle underlines on invalid fields, variables, and type mismatches in `gql` template literals
+- **Semantic syntax highlighting** — Color-coded syntax for queries, mutations, fields (nested vs. root-level), variables, types, and more. Distinguishes between operation types and fragments for better visual clarity
+- **Rich hover information** — Hover over any field to see:
+  - Field type and nullability
+  - Full field description if defined
+  - Parent type context
+  - For list fields: base type name and description (e.g., hover over `items: [Item!]` shows the `Item` type description)
+  - For root fields (queries/mutations): resolver class name with a clickable link to open the resolver file, access levels, and arguments
+  - For nested fields: all arguments with their types and default values
 - **Schema introspection** — Fetches schema from your local Rails GraphQL endpoint via introspection
 - **Cached fallback** — Falls back to last-known-good cached schema when the Rails server is unavailable
-- **Auto-refresh** — Polls for schema changes periodically (configurable)
 - **File watching** — Watches `.rb` GraphQL definition files and re-fetches schema on changes
-- **Hover type information** — Hover over GraphQL fields to see their types, arguments, and descriptions. For root fields (queries/mutations), also shows the resolver class name and access level with a clickable link to open the resolver file
 - **Autocomplete for fields** — Type suggestions for fields and arguments as you write queries, with inline snippets for required arguments and nested selections
-- **Hover error tooltips** — Hover over validation errors for human-readable explanations
+- **Error tooltips** — Hover over validation errors for human-readable explanations
 - **Quick fixes** — Suggests similar field names when you misspell one
-- **Status bar** — Shows current schema status (Ready / Cached / Loading / Error)
-
-## Installation
-
-1. Clone this repo into your VS Code extensions directory or open it as a workspace
-2. Run `npm install` and `npm run compile`
-3. Press `F5` to launch the Extension Development Host with nitro-web open
+- **Status bar** — Shows current schema status (Ready / Cached / Loading / Error) with type count and schema memory usage
 
 ## Configuration
 
@@ -28,8 +28,6 @@ Open VS Code settings and search for "Nitro GraphQL":
 | Setting | Default | Description |
 | --------- | --------- | ------------- |
 | `nitroGraphql.endpoint` | `http://localhost:3000/graphql` | GraphQL endpoint URL |
-| `nitroGraphql.pollingInterval` | `30000` | Schema poll interval in ms (0 to disable) |
-| `nitroGraphql.validationDebounce` | `300` | Validation debounce delay in ms |
 | `nitroGraphql.enabled` | `true` | Enable/disable the extension |
 | `nitroGraphql.watchRubyFiles` | `true` | Watch `.rb` files for schema changes |
 

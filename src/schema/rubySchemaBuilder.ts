@@ -37,6 +37,8 @@ export interface FieldDefinition {
   access: AccessLevel
   /** Arguments declared inline on this field inside a `do...end` block */
   fieldArgs?: ArgumentDefinition[]
+  /** Field description for context */
+  description?: string
 }
 
 export interface ArgumentDefinition {
@@ -54,6 +56,8 @@ export interface ResolverDefinition {
   returnTypeNullable: boolean
   arguments: ArgumentDefinition[]
   fileName: string
+  /** Query/Mutation description */
+  description?: string
 }
 
 export interface ResolverRegistration {
@@ -76,6 +80,8 @@ export interface GraphQLTypeDefinition {
   /** Populated for union types — the list of member type names */
   possibleTypes?: string[]
   fileName: string
+  /** Type description */
+  description?: string
 }
 
 // ── File Discovery ─────────────────────────────────────────────────────────────
@@ -217,6 +223,7 @@ export function parseRubyTypeDefinition(
 
     // Union types: parse possible_types members, no fields
     if (kind === "union") {
+      const description = extractDescription(content)
       return {
         name,
         classBasedName,
@@ -227,6 +234,7 @@ export function parseRubyTypeDefinition(
         enumValues: [],
         possibleTypes: parsePossibleTypes(content),
         fileName,
+        description,
       }
     }
 
@@ -252,6 +260,7 @@ export function parseRubyTypeDefinition(
     }
 
     const fields = parseFields(content, kind)
+    const description = extractDescription(content)
 
     return {
       name,
@@ -262,6 +271,7 @@ export function parseRubyTypeDefinition(
       implements: implementsList,
       enumValues,
       fileName,
+      description,
     }
   }
 
@@ -290,6 +300,7 @@ export function parseRubyTypeDefinition(
         const graphqlNameMatch = content.match(/graphql_name\s+["'](\w+)["']/)
         const classBasedName = deriveTypeName(moduleName)
         const name = graphqlNameMatch ? graphqlNameMatch[1] : classBasedName
+        const description = extractDescription(content)
 
         const fields = parseFields(content, "interface")
 
@@ -302,6 +313,7 @@ export function parseRubyTypeDefinition(
           implements: [],
           enumValues: [],
           fileName,
+          description,
         }
       }
     }
@@ -463,6 +475,54 @@ function parseFields(
     }
   }
 
+  // Match has_one_attached declarations — Active Storage single attachment
+  // Pattern: has_one_attached :name, ::Module::TypeClass, options...
+  const hasOneAttachedRegex = /has_one_attached\s+:(\w+)\s*,\s*(.+)/g
+  while ((match = hasOneAttachedRegex.exec(content)) !== null) {
+    const fieldName = match[1]
+    const rest = match[2]
+    const parsed = parseFieldRest(rest)
+    if (parsed) {
+      fields.push({
+        name: snakeToCamel(fieldName),
+        ...parsed,
+        isList: false, // has_one_attached is always singular
+      })
+    }
+  }
+
+  // Match has_many_attached declarations — Active Storage multiple attachments
+  // Pattern: has_many_attached :name, [::Module::TypeClass], options...
+  const hasManyAttachedRegex = /has_many_attached\s+:(\w+)\s*,\s*(.+)/g
+  while ((match = hasManyAttachedRegex.exec(content)) !== null) {
+    const fieldName = match[1]
+    const rest = match[2]
+    const parsed = parseFieldRest(rest)
+    if (parsed) {
+      fields.push({
+        name: snakeToCamel(fieldName),
+        ...parsed,
+        isList: true, // has_many_attached is always a list
+      })
+    }
+  }
+
+  // Match has_and_belongs_to_many declarations — many-to-many association
+  // Pattern: has_and_belongs_to_many :name, [::Module::TypeClass], options...
+  const habtmRegex = /has_and_belongs_to_many\s+:(\w+)\s*,\s*(.+)/g
+  while ((match = habtmRegex.exec(content)) !== null) {
+    const fieldName = match[1]
+    const rest = match[2]
+    const parsed = parseFieldRest(rest)
+    if (parsed) {
+      fields.push({
+        name: snakeToCamel(fieldName),
+        ...parsed,
+        isList: true, // has_and_belongs_to_many is always a list
+      })
+    }
+  }
+
   // Match argument declarations — used in input types ONLY.
   // Object/interface types use `field` declarations; `argument` only appears as
   // class-level fields on input types.  Inline arguments inside
@@ -519,6 +579,7 @@ interface ParsedFieldRest {
   nullable: boolean
   isList: boolean
   access: AccessLevel
+  description?: string
 }
 
 /**
@@ -556,7 +617,11 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
   // Parse access: option
   const access = parseAccessLevel(rest)
 
-  return { type, nullable, isList, access }
+  // Extract description: option
+  const descriptionMatch = rest.match(/description:\s*["']([^"']+)["']/)
+  const description = descriptionMatch ? descriptionMatch[1] : undefined
+
+  return { type, nullable, isList, access, description }
 }
 
 /**
@@ -635,6 +700,15 @@ export function snakeToCamel(snake: string): string {
 }
 
 /**
+ * Extract description from Ruby content.
+ * Looks for: description "Some text" or description 'Some text'
+ */
+function extractDescription(content: string): string | undefined {
+  const match = content.match(/description\s+["']([^"']+)["']/)
+  return match ? match[1] : undefined
+}
+
+/**
  * Parse a Ruby resolver class (BaseQuery subclass) into a ResolverDefinition.
  * These classes define `argument` declarations and a `type` return.
  */
@@ -689,6 +763,9 @@ export function parseResolverDefinition(
   // Parse arguments
   const args = parseArguments(content)
 
+  // Extract description
+  const description = extractDescription(content)
+
   return {
     className: fullClassName,
     returnType,
@@ -696,6 +773,7 @@ export function parseResolverDefinition(
     returnTypeNullable,
     arguments: args,
     fileName,
+    description,
   }
 }
 
@@ -1234,12 +1312,16 @@ export function buildGraphQLSchema(
   function buildObjectType(def: GraphQLTypeDefinition): GraphQLObjectType {
     const obj = new GraphQLObjectType({
       name: def.name,
+      description: def.description,
       fields: () => {
         const fieldConfig: GraphQLFieldConfigMap<any, any> = {}
         // Inherited fields from parent chain (applied first so child fields override)
         for (const field of collectInheritedFields(def)) {
           const fc: any = {
             type: resolveOutputType(field.type, field.isList, !field.nullable),
+          }
+          if (field.description) {
+            fc.description = field.description
           }
           if (field.fieldArgs && field.fieldArgs.length > 0) {
             fc.args = buildFieldArgs(field.fieldArgs)
@@ -1250,6 +1332,9 @@ export function buildGraphQLSchema(
         for (const field of def.fields) {
           const fc: any = {
             type: resolveOutputType(field.type, field.isList, !field.nullable),
+          }
+          if (field.description) {
+            fc.description = field.description
           }
           if (field.fieldArgs && field.fieldArgs.length > 0) {
             fc.args = buildFieldArgs(field.fieldArgs)
@@ -1282,10 +1367,18 @@ export function buildGraphQLSchema(
                   logger.warn(
                     `[NitroGraphQL] Type mismatch: ${def.name}.${field.name} declared as ${existing} but interface requires ${ifaceFieldType}; using interface type`
                   )
-                  fieldConfig[field.name] = { type: ifaceFieldType }
+                  const fc: any = { type: ifaceFieldType }
+                  if (field.description) {
+                    fc.description = field.description
+                  }
+                  fieldConfig[field.name] = fc
                 }
               } else {
-                fieldConfig[field.name] = { type: ifaceFieldType }
+                const fc: any = { type: ifaceFieldType }
+                if (field.description) {
+                  fc.description = field.description
+                }
+                fieldConfig[field.name] = fc
               }
             }
           }
@@ -1318,11 +1411,15 @@ export function buildGraphQLSchema(
   ): GraphQLInterfaceType {
     const iface = new GraphQLInterfaceType({
       name: def.name,
+      description: def.description,
       fields: () => {
         const fieldConfig: GraphQLFieldConfigMap<any, any> = {}
         for (const field of def.fields) {
           const fc: any = {
             type: resolveOutputType(field.type, field.isList, !field.nullable),
+          }
+          if (field.description) {
+            fc.description = field.description
           }
           if (field.fieldArgs && field.fieldArgs.length > 0) {
             fc.args = buildFieldArgs(field.fieldArgs)
@@ -1345,19 +1442,28 @@ export function buildGraphQLSchema(
   function buildInputType(def: GraphQLTypeDefinition): GraphQLInputObjectType {
     const input = new GraphQLInputObjectType({
       name: def.name,
+      description: def.description,
       fields: () => {
         const fieldConfig: GraphQLInputFieldConfigMap = {}
         // Inherited fields from parent input type chain
         for (const field of collectInheritedFields(def)) {
-          fieldConfig[field.name] = {
+          const fc: any = {
             type: resolveInputType(field.type, field.isList, !field.nullable),
           }
+          if (field.description) {
+            fc.description = field.description
+          }
+          fieldConfig[field.name] = fc
         }
         // Own fields (override any inherited)
         for (const field of def.fields) {
-          fieldConfig[field.name] = {
+          const fc: any = {
             type: resolveInputType(field.type, field.isList, !field.nullable),
           }
+          if (field.description) {
+            fc.description = field.description
+          }
+          fieldConfig[field.name] = fc
         }
         if (Object.keys(fieldConfig).length === 0) {
           fieldConfig["placeholder"] = {
@@ -1382,6 +1488,7 @@ export function buildGraphQLSchema(
     }
     const enumType = new GraphQLEnumType({
       name: def.name,
+      description: def.description,
       values,
     })
     registry.set(def.name, enumType)
@@ -1389,7 +1496,10 @@ export function buildGraphQLSchema(
   }
 
   function buildScalarType(def: GraphQLTypeDefinition): GraphQLScalarType {
-    const scalar = new GraphQLScalarType({ name: def.name })
+    const scalar = new GraphQLScalarType({
+      name: def.name,
+      description: def.description,
+    })
     registry.set(def.name, scalar)
     return scalar
   }
@@ -1399,6 +1509,7 @@ export function buildGraphQLSchema(
     // before the thunk resolves the member types.
     const union = new GraphQLUnionType({
       name: def.name,
+      description: def.description,
       types: () => {
         const memberTypes: GraphQLObjectType[] = []
         for (const typeName of def.possibleTypes ?? []) {
@@ -1523,6 +1634,9 @@ export function buildGraphQLSchema(
     const args = buildFieldArgs(resolver.arguments)
 
     const fieldConfig: any = { type: returnType }
+    if (resolver.description) {
+      fieldConfig.description = resolver.description
+    }
     if (Object.keys(args).length > 0) {
       fieldConfig.args = args
     }
@@ -1559,7 +1673,11 @@ export function buildGraphQLSchema(
       const fields = existingQueryType.getFields()
       for (const [name, field] of Object.entries(fields)) {
         if (!queryFields[name]) {
-          queryFields[name] = { type: field.type }
+          const fc: any = { type: field.type }
+          if (field.description) {
+            fc.description = field.description
+          }
+          queryFields[name] = fc
         }
       }
     }
@@ -1573,7 +1691,11 @@ export function buildGraphQLSchema(
       const fields = existingMutationType.getFields()
       for (const [name, field] of Object.entries(fields)) {
         if (!mutationFields[name]) {
-          mutationFields[name] = { type: field.type }
+          const fc: any = { type: field.type }
+          if (field.description) {
+            fc.description = field.description
+          }
+          mutationFields[name] = fc
         }
       }
     }
