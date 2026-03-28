@@ -5,6 +5,7 @@ import {
   repairQuery,
   getTypeContextAtOffset,
   buildCompletionItems,
+  getAlreadySelectedFields,
 } from "../src/validation/graphqlCompletionProvider"
 
 const vscode = require("vscode")
@@ -256,6 +257,108 @@ describe("buildCompletionItems", () => {
       expect(items.map(i => i.label)).toContain("__typename")
     })
   })
+
+  describe("filtering already-selected fields", () => {
+    it("excludes id when already selected", () => {
+      const userType = TEST_SCHEMA.getType("User") as any
+      const alreadySelected = new Set(["id"])
+      const items = buildCompletionItems(userType, alreadySelected)
+      const labels = items.map(i => i.label)
+      expect(labels).not.toContain("id")
+      expect(labels).toContain("name")
+      expect(labels).toContain("email")
+    })
+
+    it("excludes multiple fields when already selected", () => {
+      const userType = TEST_SCHEMA.getType("User") as any
+      const alreadySelected = new Set(["id", "name", "email"])
+      const items = buildCompletionItems(userType, alreadySelected)
+      const labels = items.map(i => i.label)
+      expect(labels).not.toContain("id")
+      expect(labels).not.toContain("name")
+      expect(labels).not.toContain("email")
+      expect(labels).toContain("posts")
+      expect(labels).toContain("__typename")
+    })
+
+    it("excludes __typename when already selected", () => {
+      const userType = TEST_SCHEMA.getType("User") as any
+      const alreadySelected = new Set(["__typename"])
+      const items = buildCompletionItems(userType, alreadySelected)
+      const labels = items.map(i => i.label)
+      expect(labels).not.toContain("__typename")
+      expect(labels).toContain("id")
+      expect(labels).toContain("name")
+    })
+
+    it("excludes union fragments when already selected", () => {
+      const searchResult = TEST_SCHEMA.getType("SearchResult") as any
+      const alreadySelected = new Set(["... on User"])
+      const items = buildCompletionItems(searchResult, alreadySelected)
+      const labels = items.map(i => i.label)
+      expect(labels).not.toContain("... on User")
+      expect(labels).toContain("... on Post")
+      expect(labels).toContain("__typename")
+    })
+
+    it("returns empty array when all fields are already selected", () => {
+      const userType = TEST_SCHEMA.getType("User") as any
+      const alreadySelected = new Set([
+        "id",
+        "name",
+        "email",
+        "posts",
+        "__typename",
+      ])
+      const items = buildCompletionItems(userType, alreadySelected)
+      expect(items).toEqual([])
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getAlreadySelectedFields
+// ---------------------------------------------------------------------------
+
+describe("getAlreadySelectedFields", () => {
+  it("returns empty set when no fields are selected", () => {
+    const q = 'query { user(id: "1") {\n  '
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, q.length)
+    expect(result).toEqual(new Set())
+  })
+
+  it("returns id when only id is selected", () => {
+    const q = 'query { user(id: "1") {\n  id\n  '
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, q.length)
+    expect(result).toContain("id")
+  })
+
+  it("returns multiple fields when they are selected", () => {
+    const q = 'query { user(id: "1") {\n  id\n  name\n  email\n  '
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, q.length)
+    expect(result).toContain("id")
+    expect(result).toContain("name")
+    expect(result).toContain("email")
+    expect(result.size).toBe(3)
+  })
+
+  it("returns __typename when it is selected", () => {
+    const q = 'query { user(id: "1") {\n  __typename\n  '
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, q.length)
+    expect(result).toContain("__typename")
+  })
+
+  it("returns inline fragments for union types", () => {
+    const q = "query { search {\n  ... on User {\n    id\n  }\n  "
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, q.length)
+    expect(result).toContain("... on User")
+  })
+
+  it("handles empty cursor offset gracefully", () => {
+    const q = ""
+    const result = getAlreadySelectedFields(TEST_SCHEMA, q, 0)
+    expect(result).toEqual(new Set())
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -372,5 +475,80 @@ describe("GraphQLCompletionProvider", () => {
     const labels = items!.map(i => i.label)
     expect(labels).toContain("name")
     expect(labels).toContain("id")
+  })
+
+  it("excludes already-selected fields from completions", () => {
+    // User has already selected 'id' and 'name', cursor is after 'name'
+    const source = [
+      "const q = gql`",
+      "  query {",
+      '    user(id: "1") {',
+      "      id",
+      "      name",
+      "      ",
+      "    }",
+      "  }",
+      "`",
+    ].join("\n")
+    const provider = new GraphQLCompletionProvider(() => TEST_SCHEMA)
+    const items = provider.provideCompletionItems(
+      mockDocument(source) as any,
+      pos(5, 6) // cursor after "      "
+    )
+    expect(items).not.toBeNull()
+    const labels = items!.map(i => i.label)
+    expect(labels).not.toContain("id")
+    expect(labels).not.toContain("name")
+    expect(labels).toContain("email")
+    expect(labels).toContain("posts")
+    expect(labels).toContain("__typename")
+  })
+
+  it("excludes __typename when already selected", () => {
+    const source = [
+      "const q = gql`",
+      "  query {",
+      '    user(id: "1") {',
+      "      __typename",
+      "      ",
+      "    }",
+      "  }",
+      "`",
+    ].join("\n")
+    const provider = new GraphQLCompletionProvider(() => TEST_SCHEMA)
+    const items = provider.provideCompletionItems(
+      mockDocument(source) as any,
+      pos(4, 6)
+    )
+    expect(items).not.toBeNull()
+    const labels = items!.map(i => i.label)
+    expect(labels).not.toContain("__typename")
+    expect(labels).toContain("id")
+    expect(labels).toContain("name")
+  })
+
+  it("excludes already-selected union fragments from completions", () => {
+    const source = [
+      "const q = gql`",
+      "  query {",
+      "    search {",
+      "      ... on User {",
+      "        id",
+      "      }",
+      "      ",
+      "    }",
+      "  }",
+      "`",
+    ].join("\n")
+    const provider = new GraphQLCompletionProvider(() => TEST_SCHEMA)
+    const items = provider.provideCompletionItems(
+      mockDocument(source) as any,
+      pos(6, 6)
+    )
+    expect(items).not.toBeNull()
+    const labels = items!.map(i => i.label)
+    expect(labels).not.toContain("... on User")
+    expect(labels).toContain("... on Post")
+    expect(labels).toContain("__typename")
   })
 })

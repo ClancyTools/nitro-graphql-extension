@@ -14,6 +14,9 @@ import {
   isNonNullType,
   isListType,
   getNamedType,
+  SelectionSetNode,
+  FieldNode,
+  InlineFragmentNode,
 } from "graphql"
 import { findGraphQLTemplates } from "./queryFinder"
 
@@ -72,7 +75,15 @@ export class GraphQLCompletionProvider
           offset
         )
         if (!contextType) return null
-        return buildCompletionItems(contextType)
+
+        // Get already-selected fields in the current selection set
+        const selectedFields = getAlreadySelectedFields(
+          schema,
+          template.query,
+          offset
+        )
+
+        return buildCompletionItems(contextType, selectedFields)
       } catch {
         return null
       }
@@ -241,22 +252,96 @@ export function getTypeContextAtOffset(
 }
 
 /**
+ * Extract the set of field names already selected in the selection set
+ * at the given cursor offset.
+ *
+ * Returns a set of field names that have already been selected in the current
+ * selection set (i.e., selections that appear before the cursor).
+ */
+export function getAlreadySelectedFields(
+  schema: GraphQLSchema,
+  query: string,
+  cursorOffset: number
+): Set<string> {
+  const repaired = repairQuery(query, cursorOffset)
+
+  let doc: ReturnType<typeof parse>
+  try {
+    doc = parse(repaired)
+  } catch {
+    return new Set()
+  }
+
+  const selectedFields = new Set<string>()
+  let currentSelectionSet: SelectionSetNode | null = null
+
+  visit(doc, {
+    SelectionSet: {
+      enter(node: any) {
+        // Find the selection set that contains the cursor
+        if (
+          node.loc &&
+          node.loc.start <= cursorOffset &&
+          cursorOffset <= node.loc.end
+        ) {
+          currentSelectionSet = node as SelectionSetNode
+        }
+      },
+    },
+  })
+
+  // Extract field names from the current selection set that appear BEFORE the cursor
+  if (currentSelectionSet) {
+    const selections = (currentSelectionSet as SelectionSetNode).selections
+    for (const selection of selections) {
+      // Only include selections that end before the cursor (are already complete)
+      if (selection.loc && selection.loc.end > cursorOffset) {
+        // This selection hasn't been completed yet, skip it
+        continue
+      }
+
+      if (selection.kind === "Field") {
+        const field = selection as FieldNode
+        selectedFields.add(field.name.value)
+      } else if (selection.kind === "InlineFragment") {
+        const fragment = selection as InlineFragmentNode
+        // For inline fragments, add the type condition (e.g., "... on User" -> "User")
+        if (fragment.typeCondition) {
+          selectedFields.add(`... on ${fragment.typeCondition.name.value}`)
+        }
+      } else if (selection.kind === "FragmentSpread") {
+        // For fragment spreads, add the fragment name
+        selectedFields.add(`...${(selection as any).name.value}`)
+      }
+    }
+  }
+
+  return selectedFields
+}
+
+/**
  * Build VS Code completion items for the fields of a GraphQL composite type.
  *
  * - Union types: inline fragment spread snippets for each member type.
  * - Object/Interface types: field completions with type detail, sub-selection
  *   snippets for object-valued fields, and argument snippets for required args.
  * - Always adds `__typename`.
+ * - Filters out fields that have already been selected in the current selection set.
  */
 export function buildCompletionItems(
-  type: GraphQLCompositeType
+  type: GraphQLCompositeType,
+  alreadySelected: Set<string> = new Set()
 ): vscode.CompletionItem[] {
   const items: vscode.CompletionItem[] = []
 
   if (isUnionType(type)) {
     for (const memberType of type.getTypes()) {
+      const fragmentLabel = `... on ${memberType.name}`
+      if (alreadySelected.has(fragmentLabel)) {
+        continue
+      }
       const item = new vscode.CompletionItem(
-        `... on ${memberType.name}`,
+        fragmentLabel,
         vscode.CompletionItemKind.Snippet
       )
       item.insertText = new vscode.SnippetString(
@@ -271,6 +356,9 @@ export function buildCompletionItems(
   } else if (isObjectType(type) || isInterfaceType(type)) {
     const fields = type.getFields()
     for (const [fieldName, field] of Object.entries(fields)) {
+      if (alreadySelected.has(fieldName)) {
+        continue
+      }
       const item = new vscode.CompletionItem(
         fieldName,
         vscode.CompletionItemKind.Field
@@ -313,16 +401,18 @@ export function buildCompletionItems(
     }
   }
 
-  // __typename is always valid on any type
-  const typenameItem = new vscode.CompletionItem(
-    "__typename",
-    vscode.CompletionItemKind.Field
-  )
-  typenameItem.detail = "String!"
-  typenameItem.documentation = new vscode.MarkdownString(
-    "The name of the current object type"
-  )
-  items.push(typenameItem)
+  // __typename is always valid on any type, but also filter it if already selected
+  if (!alreadySelected.has("__typename")) {
+    const typenameItem = new vscode.CompletionItem(
+      "__typename",
+      vscode.CompletionItemKind.Field
+    )
+    typenameItem.detail = "String!"
+    typenameItem.documentation = new vscode.MarkdownString(
+      "The name of the current object type"
+    )
+    items.push(typenameItem)
+  }
 
   return items
 }
