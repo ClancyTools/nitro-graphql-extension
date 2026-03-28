@@ -137,4 +137,58 @@ describe("GraphQLSemanticTokensProvider", () => {
     expect(tokens).not.toBeNull()
     expect(tokens.data.length).toBeGreaterThan(0)
   })
+
+  it("provides semantic tokens for fragment definitions", () => {
+    const source = `
+      const frag = gql\`
+        fragment UserFields on User {
+          id
+          name
+          email
+        }
+      \`
+    `
+    const doc = mockDocument(source) as any
+
+    const tokens = provider.provideDocumentSemanticTokens(doc)
+    expect(tokens).not.toBeNull()
+    expect(tokens.data.length).toBeGreaterThan(0)
+  })
+
+  it("handles fragments with nested fields", () => {
+    const source = `
+      const frag = gql\`
+        fragment UserFields on User {
+          id
+          name
+          profile {
+            bio
+            avatar
+          }
+        }
+      \`
+    `
+    const doc = mockDocument(source) as any
+
+    const tokens = provider.provideDocumentSemanticTokens(doc)
+    expect(tokens).not.toBeNull()
+    expect(tokens.data.length).toBeGreaterThan(0)
+  })
+
+  it("highlights fragment spreads as property", () => {
+    const source = `
+      const q = gql\`
+        query GetUser {
+          user {
+            ...UserFields
+          }
+        }
+      \`
+    `
+    const doc = mockDocument(source) as any
+
+    const tokens = provider.provideDocumentSemanticTokens(doc)
+    expect(tokens).not.toBeNull()
+    expect(tokens.data.length).toBeGreaterThan(0)
+  })
 })

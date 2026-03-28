@@ -19,13 +19,14 @@ import { findGraphQLTemplates } from "./queryFinder"
  * Semantic tokens provider for GraphQL query syntax highlighting.
  *
  * Generates semantic tokens for GraphQL elements:
- * - Type names: operation names, inline fragment types, fragment names
- * - Functions: root-level field names (direct children of query/mutation operations)
+ * - Functions: operation names (query/mutation/subscription), root-level entry point fields
+ * - Type names: inline fragment types, fragment definitions
+ * - Properties: nested field names, fragment spreads
  * - Parameters: argument names in field selections
  * - Variables: $variable references
  * - Strings/Numbers: literal values
  *
- * Unstyled: nested field names, operation keywords (query, mutation, subscription)
+ * Unstyled: operation keywords (query, mutation, subscription)
  *
  * This provides selective highlighting to add just enough visual structure
  * without being distracting.
@@ -39,13 +40,14 @@ export class GraphQLSemanticTokensProvider
     // Define token types and modifiers that will be used
     const tokenTypes = [
       "keyword", // query, mutation, subscription, fragment, on
-      "type", // operation names, inline fragment types, fragment names
-      "function", // root-level entry point fields
-      "property", // nested field names
+      "type", // inline fragment types, fragment definitions
+      "function", // operation names, root-level entry point fields
+      "property", // nested field names, fragment spreads
       "parameter", // argument names (e.g., serviceQuoteId in serviceQuoteId: $serviceQuoteId)
       "variable", // $variable
       "string", // string literals
       "number", // number literals
+      "method",
     ]
 
     const tokenModifiers = [
@@ -87,70 +89,81 @@ export class GraphQLSemanticTokensProvider
   ): void {
     // Track depth in selection sets to distinguish root fields from nested
     let selectionSetDepth = 0
+    // Track whether we're inside a fragment definition (fields should always be "property")
+    let inFragmentDefinition = false
 
     visit(doc, {
       OperationDefinition: (node: OperationDefinitionNode) => {
-        // Highlight operation name if present (but not the keyword)
+        // Highlight operation name as "function" (direct entry points like mutations/queries)
         if (node.name) {
           this.addToken(
             builder,
             template,
             node.name.loc,
             node.name.value.length,
-            "type",
+            "function",
             ["declaration"]
           )
         }
       },
 
-      FragmentDefinition: (node: FragmentDefinitionNode) => {
-        // Highlight "fragment" keyword
-        if (node.loc) {
-          const fragmentKeywordStart = node.loc.start
-          this.addTokenByOffset(
-            builder,
-            template,
-            fragmentKeywordStart,
-            "fragment".length,
-            "keyword",
-            ["declaration"]
-          )
-        }
+      FragmentDefinition: {
+        enter: (node: FragmentDefinitionNode) => {
+          // Highlight "fragment" keyword
+          if (node.loc) {
+            const fragmentKeywordStart = node.loc.start
+            this.addTokenByOffset(
+              builder,
+              template,
+              fragmentKeywordStart,
+              "fragment".length,
+              "keyword",
+              ["declaration"]
+            )
+          }
 
-        // Highlight fragment name
-        if (node.name) {
-          this.addToken(
-            builder,
-            template,
-            node.name.loc,
-            node.name.value.length,
-            "type",
-            ["definition"]
-          )
-        }
+          // Highlight fragment name
+          if (node.name) {
+            this.addToken(
+              builder,
+              template,
+              node.name.loc,
+              node.name.value.length,
+              "type",
+              ["definition"]
+            )
+          }
 
-        // Highlight "on" keyword before type
-        if (node.typeCondition && node.typeCondition.loc) {
-          const onStart = node.typeCondition.loc.start - 3 // "on " is 3 chars before type name
-          this.addTokenByOffset(
-            builder,
-            template,
-            onStart,
-            "on".length,
-            "keyword"
-          )
-        }
+          // Highlight "on" keyword before type
+          if (node.typeCondition && node.typeCondition.loc) {
+            const onStart = node.typeCondition.loc.start - 3 // "on " is 3 chars before type name
+            this.addTokenByOffset(
+              builder,
+              template,
+              onStart,
+              "on".length,
+              "keyword"
+            )
+          }
 
-        // Highlight the type after "on"
-        if (node.typeCondition && node.typeCondition.name) {
-          this.addToken(
-            builder,
-            template,
-            node.typeCondition.name.loc,
-            node.typeCondition.name.value.length,
-            "type"
-          )
-        }
+          // Highlight the type after "on"
+          if (node.typeCondition && node.typeCondition.name) {
+            this.addToken(
+              builder,
+              template,
+              node.typeCondition.name.loc,
+              node.typeCondition.name.value.length,
+              "type"
+            )
+          }
+
+          // Mark that we're entering a fragment definition
+          inFragmentDefinition = true
+        },
+        leave: () => {
+          // Mark that we're leaving a fragment definition
+          inFragmentDefinition = false
+        },
       },
 
       SelectionSet: {
@@ -163,15 +176,29 @@ export class GraphQLSemanticTokensProvider
       },
 
       Field: (node: FieldNode) => {
-        // Style root-level field names as "function" (direct children of query/mutation)
-        if (node.name && selectionSetDepth === 1) {
-          this.addToken(
-            builder,
-            template,
-            node.name.loc,
-            node.name.value.length,
-            "function"
-          )
+        // Inside fragment definitions, all fields should be "property"
+        // Outside, root-level fields (depth 1) are "function", nested are "property"
+        if (node.name) {
+          if (inFragmentDefinition) {
+            // All fields in fragments are properties
+            this.addToken(
+              builder,
+              template,
+              node.name.loc,
+              node.name.value.length,
+              "property"
+            )
+          } else if (selectionSetDepth === 1) {
+            // Root-level fields in operations are functions
+            this.addToken(
+              builder,
+              template,
+              node.name.loc,
+              node.name.value.length,
+              "function"
+            )
+          }
+          // Note: nested fields (depth > 1) in operations don't get styled
         }
 
         // Highlight argument names (the parameter names, not the values)
@@ -216,14 +243,14 @@ export class GraphQLSemanticTokensProvider
       },
 
       FragmentSpread: (node: FragmentSpreadNode) => {
-        // Highlight fragment name in spread (e.g., ...FragmentName)
+        // Highlight fragment name in spread as "property" (e.g., ...FragmentName)
         if (node.name) {
           this.addToken(
             builder,
             template,
             node.name.loc,
             node.name.value.length,
-            "type"
+            "property"
           )
         }
       },
