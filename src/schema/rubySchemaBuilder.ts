@@ -1657,6 +1657,7 @@ export interface SchemaBuildResult {
   registrationCount: number
   errors: string[]
   skippedFiles: string[]
+  memoryUsedBytes?: number
 }
 
 /**
@@ -1759,6 +1760,9 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
     )
   }
 
+  // Estimate memory usage of the schema
+  const memoryUsedBytes = process.memoryUsage().heapUsed
+
   return {
     schema,
     typeCount: typeDefs.length,
@@ -1766,5 +1770,6 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
     registrationCount: registrations.length,
     errors: validationErrors,
     skippedFiles,
+    memoryUsedBytes,
   }
 }

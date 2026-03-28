@@ -15,6 +15,17 @@ export interface SchemaStatusInfo {
   timestamp?: number
 }
 
+/**
+ * Format bytes into human-readable size (KB, MB, GB)
+ */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+}
+
 export class SchemaManager {
   private schema: GraphQLSchema | null = null
   private cache: CacheManager
@@ -70,10 +81,13 @@ export class SchemaManager {
           this.schema = result.schema
           cacheSchemaResult(this.cache, result).catch(() => {})
 
+          const memoryInfo = result.memoryUsedBytes
+            ? `, ${formatBytes(result.memoryUsedBytes)}`
+            : ""
           const msg =
             result.errors.length > 0
-              ? `Schema ready (${result.typeCount} types, ${result.errors.length} warnings)`
-              : `Schema ready (${result.typeCount} types)`
+              ? `Schema ready (${result.typeCount} types, ${result.resolverCount} resolvers, ${result.registrationCount} registrations, ${result.errors.length} warnings${memoryInfo})`
+              : `Schema ready (${result.typeCount} types, ${result.resolverCount} resolvers, ${result.registrationCount} registrations${memoryInfo})`
 
           this.setStatus("ready", msg)
           this.onSchemaReady?.(result.schema)
@@ -98,7 +112,15 @@ export class SchemaManager {
         this.schema = schema
         const result = this.localServer.getLastBuildResult()
         const typeCount = result?.typeCount ?? 0
-        this.setStatus("ready", `Schema ready (${typeCount} types)`)
+        const resolverCount = result?.resolverCount ?? 0
+        const registrationCount = result?.registrationCount ?? 0
+        const memoryInfo = result?.memoryUsedBytes
+          ? `, ${formatBytes(result.memoryUsedBytes)}`
+          : ""
+        this.setStatus(
+          "ready",
+          `Schema ready (${typeCount} types, ${resolverCount} resolvers, ${registrationCount} registrations${memoryInfo})`
+        )
         this.onSchemaReady?.(schema)
       } else {
         this.setStatus(
