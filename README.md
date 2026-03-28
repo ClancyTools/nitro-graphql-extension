@@ -75,17 +75,13 @@ npm run watch        # Build in watch mode
 npm test             # Run the test suite
 ```
 
-### Running the Extension
+### Running the Extension Locally
 
-The extension is configured to automatically open the `nitro-web` project when launched for testing. By default, it looks for `nitro-web` as a sibling directory to this extension.
+To test the extension during development, use the **Run Extension** debug configuration (`F5`). This will launch a VS Code instance with the extension and open the `nitro-web` project for testing.
 
-If your `nitro-web` project is in a different location, set the `NITRO_WEB_PATH` environment variable:
+By default, the launch configuration expects `nitro-web` to be a sibling directory to this extension. If your setup is different, you can modify the path in `.vscode/launch.json` or set the `NITRO_WEB_PATH` environment variable before launching.
 
-```bash
-export NITRO_WEB_PATH="/path/to/your/nitro-web"
-```
-
-Then launch the extension via VS Code's Run Extension debug configuration (`F5` or Run → Run Without Debugging).
+Once the extension is installed by users, it will work on any project they have open in VS Code — no additional configuration needed.
 
 ## Testing
 
