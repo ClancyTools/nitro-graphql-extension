@@ -10,6 +10,8 @@ import {
   GraphQLCodeActionProvider,
 } from "./validation/diagnostics"
 import { FileWatcher } from "./watcher/fileWatcher"
+import { GraphQLTypeHoverProvider } from "./validation/graphqlHoverProvider"
+import { GraphQLCompletionProvider } from "./validation/graphqlCompletionProvider"
 
 let schemaManager: SchemaManager | undefined
 let diagnosticsProvider: GraphQLDiagnosticsProvider | undefined
@@ -104,6 +106,31 @@ export function activate(context: vscode.ExtensionContext): void {
   })
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(SUPPORTED_LANGUAGES, hoverProvider)
+  )
+
+  // GraphQL type info hover provider (shows field/arg types on hover)
+  const typeHoverProvider = new GraphQLTypeHoverProvider(
+    () => schemaManager?.getSchema() ?? null
+  )
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider(
+      SUPPORTED_LANGUAGES,
+      typeHoverProvider
+    )
+  )
+
+  // GraphQL completion provider (suggests fields as the user types)
+  const completionProvider = new GraphQLCompletionProvider(
+    () => schemaManager?.getSchema() ?? null
+  )
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      SUPPORTED_LANGUAGES,
+      completionProvider,
+      " ",
+      "\n",
+      "{"
+    )
   )
 
   // Code action provider
