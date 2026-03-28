@@ -7,7 +7,7 @@
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "/Users/mike.clancy/Documents/Nitro/nitro-web"
+        "${env:NITRO_WEB_PATH:${workspaceFolder}/../nitro-web}"
       ],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
