@@ -219,7 +219,17 @@ export function buildHoverContent(
               md.appendMarkdown(`**Type:** \`${typeString}\`\n\n`)
             }
 
-            md.appendMarkdown(`**On:** \`${parentType.name}\`\n\n`)
+            // Make parent type clickable if it has a file path
+            const parentTypeFilePath = getTypeFilePath(schema, parentType.name)
+            if (parentTypeFilePath) {
+              const parentTypeLink = makeFileCommandLink(
+                parentType.name,
+                parentTypeFilePath
+              )
+              md.appendMarkdown(`**On:** ${parentTypeLink}\n\n`)
+            } else {
+              md.appendMarkdown(`**On:** \`${parentType.name}\`\n\n`)
+            }
 
             if (fieldDef.args.length > 0) {
               md.appendMarkdown(`**Arguments:**\n\n`)

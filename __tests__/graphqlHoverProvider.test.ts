@@ -647,4 +647,96 @@ describe("buildHoverContent — type file links", () => {
     // Should fall back to showing type as code without links
     expect(result!.value).toContain("Simple")
   })
+
+  it("makes parent type in nested field hover clickable when it has a file path", () => {
+    const projectComponentType = new GraphQLObjectType({
+      name: "ProjectComponent",
+      fields: { id: { type: GraphQLString } },
+    })
+
+    const parentType = new GraphQLObjectType({
+      name: "ProposedPartChange",
+      fields: {
+        projectComponent: {
+          type: new GraphQLNonNull(projectComponentType),
+        },
+      },
+    })
+
+    const schemaWithParentTypeFileMap = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          proposal: { type: parentType },
+        },
+      }),
+      types: [parentType, projectComponentType],
+      extensions: {
+        typeFileMap: {
+          ProposedPartChange: "/app/graphql/types/proposed_part_change_type.rb",
+          ProjectComponent: "/app/graphql/types/project_component_type.rb",
+        },
+      },
+    })
+
+    // Hover on nested field: query { proposal { projectComponent } }
+    //                                           ^-- projectComponent
+    const query = "query { proposal { projectComponent } }"
+    // "query { proposal { ".length = 19
+    const offset = 19
+
+    const result = buildHoverContent(schemaWithParentTypeFileMap, query, offset)
+    expect(result).not.toBeNull()
+    // Should contain the parent type name
+    expect(result!.value).toContain("ProposedPartChange")
+    // Should contain a link to the parent type file
+    expect(result!.value).toContain("proposed_part_change_type.rb")
+  })
+
+  it("shows parent type as plain text when it has no file path", () => {
+    const projectComponentType = new GraphQLObjectType({
+      name: "ProjectComponent",
+      fields: { id: { type: GraphQLString } },
+    })
+
+    const parentType = new GraphQLObjectType({
+      name: "ProposedPartChange",
+      fields: {
+        projectComponent: {
+          type: projectComponentType,
+        },
+      },
+    })
+
+    const schemaWithoutParentTypeFileMap = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          proposal: { type: parentType },
+        },
+      }),
+      types: [parentType, projectComponentType],
+      extensions: {
+        typeFileMap: {
+          // Only ProjectComponent is in the map, not ProposedPartChange
+          ProjectComponent: "/app/graphql/types/project_component_type.rb",
+        },
+      },
+    })
+
+    const query = "query { proposal { projectComponent } }"
+    const offset = 19
+
+    const result = buildHoverContent(
+      schemaWithoutParentTypeFileMap,
+      query,
+      offset
+    )
+    expect(result).not.toBeNull()
+    // Should show parent type as plain text (in backticks)
+    expect(result!.value).toContain("On:")
+    expect(result!.value).toContain("ProposedPartChange")
+    // Should NOT contain a command link to a file
+    expect(result!.value).not.toContain("proposed_part_change_type.rb")
+  })
 })

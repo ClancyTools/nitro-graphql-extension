@@ -135,7 +135,9 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 
   // Code action provider
-  const codeActionProvider = new GraphQLCodeActionProvider()
+  const codeActionProvider = new GraphQLCodeActionProvider(
+    () => schemaManager?.getSchema() ?? null
+  )
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
       SUPPORTED_LANGUAGES,
@@ -232,6 +234,45 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("nitroGraphql.showLogs", () => {
       logger.showChannel()
     })
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "nitroGraphql.viewTypeDefinition",
+      (typeName: string) => {
+        const schema = schemaManager?.getSchema()
+        if (!schema) {
+          vscode.window.showErrorMessage("GraphQL schema not loaded yet.")
+          return
+        }
+
+        const type = schema.getType(typeName)
+        if (!type) {
+          vscode.window.showErrorMessage(
+            `Type "${typeName}" not found in schema.`
+          )
+          return
+        }
+
+        // Display type information
+        let info = `\n=== Type: ${typeName} ===\n`
+        if (type.description) {
+          info += `\nDescription: ${type.description}\n`
+        }
+
+        // Show fields if it's an object type
+        if ("getFields" in type) {
+          const fields = type.getFields()
+          info += "\nFields:\n"
+          for (const [fieldName, field] of Object.entries(fields)) {
+            info += `  ${fieldName}: ${field.type}${field.description ? ` - ${field.description}` : ""}\n`
+          }
+        }
+
+        logger.log(info)
+        logger.showChannel()
+      }
+    )
   )
 
   context.subscriptions.push({ dispose: () => statusBarItem?.dispose() })

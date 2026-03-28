@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import { GraphQLSchema } from "graphql"
 import { ValidationResult, ValidationError } from "./validator"
 
 const DIAGNOSTIC_SOURCE = "Nitro GraphQL"
@@ -128,22 +129,27 @@ export class GraphQLHoverProvider implements vscode.HoverProvider {
 }
 
 /**
- * Code action provider that offers quick fixes for GraphQL validation errors.
+ * Code action provider that offers quick fixes and type navigation for GraphQL validation errors.
  */
 export class GraphQLCodeActionProvider implements vscode.CodeActionProvider {
+  constructor(
+    private readonly getSchema: () => GraphQLSchema | null = () => null
+  ) {}
+
   provideCodeActions(
     document: vscode.TextDocument,
     range: vscode.Range,
     context: vscode.CodeActionContext
   ): vscode.CodeAction[] {
     const actions: vscode.CodeAction[] = []
+    const schema = this.getSchema()
 
     for (const diagnostic of context.diagnostics) {
       if (diagnostic.source !== DIAGNOSTIC_SOURCE) {
         continue
       }
 
-      // Extract suggestions from the diagnostic message
+      // Extract suggestions from the diagnostic message (field name replacements)
       const suggestionsMatch = diagnostic.message.match(/Did you mean: (.+)\?/)
       if (suggestionsMatch) {
         const suggestions = suggestionsMatch[1].match(/"([^"]+)"/g)
@@ -162,8 +168,47 @@ export class GraphQLCodeActionProvider implements vscode.CodeActionProvider {
           }
         }
       }
+
+      // Extract type names from error messages and create navigation actions
+      if (schema) {
+        const typeNames = this.extractTypeNamesFromMessage(diagnostic.message)
+        for (const typeName of typeNames) {
+          if (schema.getType(typeName)) {
+            const action = new vscode.CodeAction(
+              `View type "${typeName}"`,
+              vscode.CodeActionKind.QuickFix
+            )
+            action.command = {
+              title: `View type "${typeName}"`,
+              command: "nitroGraphql.viewTypeDefinition",
+              arguments: [typeName],
+            }
+            action.diagnostics = [diagnostic]
+            actions.push(action)
+          }
+        }
+      }
     }
 
     return actions
+  }
+
+  /**
+   * Extract type names referenced in error messages.
+   * Looks for patterns like: on type "TypeName", field "xyz" on type "TypeName"
+   */
+  private extractTypeNamesFromMessage(message: string): string[] {
+    const typeNames: string[] = []
+    // Match "on type 'TypeName'" or similar patterns
+    const typeMatches = message.match(/on type "([^"]+)"/g)
+    if (typeMatches) {
+      for (const match of typeMatches) {
+        const typeName = match.replace(/on type "/, "").replace(/"/, "")
+        if (!typeNames.includes(typeName)) {
+          typeNames.push(typeName)
+        }
+      }
+    }
+    return typeNames
   }
 }
