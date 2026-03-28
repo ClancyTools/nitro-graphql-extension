@@ -12,6 +12,7 @@ import {
 import { FileWatcher } from "./watcher/fileWatcher"
 import { GraphQLTypeHoverProvider } from "./validation/graphqlHoverProvider"
 import { GraphQLCompletionProvider } from "./validation/graphqlCompletionProvider"
+import { GraphQLSemanticTokensProvider } from "./validation/graphqlSemanticTokensProvider"
 
 let schemaManager: SchemaManager | undefined
 let diagnosticsProvider: GraphQLDiagnosticsProvider | undefined
@@ -142,6 +143,16 @@ export function activate(context: vscode.ExtensionContext): void {
       {
         providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
       }
+    )
+  )
+
+  // Semantic tokens provider (syntax highlighting)
+  const semanticTokensProvider = new GraphQLSemanticTokensProvider()
+  context.subscriptions.push(
+    vscode.languages.registerDocumentSemanticTokensProvider(
+      SUPPORTED_LANGUAGES,
+      semanticTokensProvider,
+      semanticTokensProvider.semanticTokensLegend
     )
   )
 

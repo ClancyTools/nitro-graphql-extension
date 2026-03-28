@@ -10,6 +10,9 @@ const vscode = {
     registerHoverProvider: jest.fn(() => ({ dispose: jest.fn() })),
     registerCodeActionsProvider: jest.fn(() => ({ dispose: jest.fn() })),
     registerCompletionItemProvider: jest.fn(() => ({ dispose: jest.fn() })),
+    registerDocumentSemanticTokensProvider: jest.fn(() => ({
+      dispose: jest.fn(),
+    })),
     getDiagnostics: jest.fn(() => []),
   },
   window: {
@@ -183,6 +186,49 @@ const vscode = {
     constructor(items: any[], isIncomplete = false) {
       this.items = items
       this.isIncomplete = isIncomplete
+    }
+  },
+  SemanticTokensLegend: class {
+    tokenTypes: string[]
+    tokenModifiers: string[]
+    constructor(tokenTypes: string[], tokenModifiers: string[] = []) {
+      this.tokenTypes = tokenTypes
+      this.tokenModifiers = tokenModifiers
+    }
+  },
+  SemanticTokensBuilder: class {
+    private data: number[] = []
+    private legend: any
+    private lastLine = 0
+    private lastColumn = 0
+
+    constructor(legend: any) {
+      this.legend = legend
+    }
+
+    push(
+      line: number,
+      character: number,
+      length: number,
+      tokenType: number,
+      tokenModifiers?: number
+    ) {
+      this.data.push(
+        line - this.lastLine,
+        character - (line === this.lastLine ? this.lastColumn : 0),
+        length,
+        tokenType,
+        tokenModifiers ?? 0
+      )
+      this.lastLine = line
+      this.lastColumn = character + length
+    }
+
+    build() {
+      return {
+        resultId: undefined,
+        data: new Uint32Array(this.data),
+      }
     }
   },
 }
