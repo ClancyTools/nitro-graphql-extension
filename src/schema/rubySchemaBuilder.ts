@@ -892,9 +892,17 @@ export function parseResolverDefinition(
       .trim()
     returnType = normalizeRubyType(typeStr) || "String"
 
-    // Preserve the full Ruby path for namespace-aware resolution in the schema builder
+    // Preserve the full Ruby path for namespace-aware resolution in the schema builder.
     if (typeStr.includes("::")) {
+      // Explicitly namespaced — store the path as-is (strip leading ::).
       returnTypeRubyPath = typeStr.replace(/^::/, "")
+    } else if (modules.length > 0) {
+      // Unqualified type reference (e.g. `type ActivityType, null: false`).
+      // Ruby resolves this by looking in the enclosing module namespace first.
+      // Store a candidate path scoped to this resolver's namespace so the schema
+      // builder can prefer it over a same-named type in a different component.
+      // e.g. resolver in Craftsman::Graphql + ActivityType → Craftsman::Graphql::ActivityType
+      returnTypeRubyPath = [...modules, typeStr].join("::")
     }
 
     const nullMatch = typeOpts.match(/null:\s*(true|false)/)

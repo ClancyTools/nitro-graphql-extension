@@ -2359,6 +2359,91 @@ end
     expect(argNames).not.toContain("projectId")
     expect(argNames).not.toContain("productId")
   })
+
+  it("should prefer same-namespace type over identically-named type in different namespace", () => {
+    // Reproduces: Craftsman::Graphql::MarkCraftsmanAvailableMutation declares
+    //   type ActivityType, null: false
+    // Ruby resolves unqualified names by looking in the enclosing namespace first.
+    // Craftsman::Graphql::ActivityType must win over Projects::Graphql::ActivityType.
+
+    const craftsmanActivityType = parseRubyTypeDefinition(
+      `
+module Craftsman
+  module Graphql
+    class ActivityType < NitroGraphql::Types::BaseObject
+      graphql_name "CraftsmanActivity"
+      field :id, ID, null: false
+      field :status, String
+    end
+  end
+end
+`,
+      "craftsman/graphql/activity_type.rb"
+    )!
+
+    const projectsActivityType = parseRubyTypeDefinition(
+      `
+module Projects
+  module Graphql
+    class ActivityType < NitroGraphql::Types::BaseObject
+      field :icon, String, null: false
+      field :color, String, null: false
+    end
+  end
+end
+`,
+      "projects/graphql/activity_type.rb"
+    )!
+
+    const craftsmanMutation = parseResolverDefinition(
+      `
+module Craftsman
+  module Graphql
+    class MarkCraftsmanAvailableMutation < NitroGraphql::BaseQuery
+      type ActivityType, null: false
+      argument :activity_id, ID
+      def resolve(activity_id:); end
+    end
+  end
+end
+`,
+      "craftsman/graphql/mark_craftsman_available_mutation.rb"
+    )!
+
+    // returnTypeRubyPath must be set to the namespace-qualified candidate
+    expect(craftsmanMutation.returnTypeRubyPath).toBe(
+      "Craftsman::Graphql::ActivityType"
+    )
+
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "markCraftsmanAvailable",
+        resolverClassName: "Craftsman::Graphql::MarkCraftsmanAvailableMutation",
+        target: "mutation",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(
+      [
+        craftsmanActivityType,
+        projectsActivityType,
+        parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+      ],
+      [craftsmanMutation],
+      registrations
+    )
+
+    const mutationType = schema.getMutationType()!
+    const field = mutationType.getFields()["markCraftsmanAvailable"]
+    expect(field).toBeDefined()
+
+    // Unwrap NonNull to get the base type
+    let baseType: any = field.type
+    while (baseType.ofType) baseType = baseType.ofType
+
+    // Must resolve to CraftsmanActivity, not Activity (Projects one)
+    expect(baseType.name).toBe("CraftsmanActivity")
+  })
 })
 
 describe("validateSchemaIntegrity", () => {
