@@ -832,12 +832,91 @@ function extractDescription(content: string): string | undefined {
 }
 
 /**
+ * Parse a Ruby mixin module file that provides arguments via `self.included`.
+ * Returns the full module path and the arguments it contributes, or null if
+ * this file doesn't look like an argument-providing mixin.
+ *
+ * Example mixin:
+ *   module NitroGraphql
+ *     module PaginationArguments
+ *       def self.included(cls)
+ *         cls.class_eval do
+ *           argument :page, Integer, required: false, default_value: 1
+ *         end
+ *       end
+ *     end
+ *   end
+ */
+export function parseMixinArguments(
+  fileContent: string
+): { modulePath: string; arguments: ArgumentDefinition[] } | null {
+  const lines = fileContent.split("\n")
+  const contentLines = lines.filter(l => !l.trim().startsWith("#"))
+  const content = contentLines.join("\n")
+
+  // Must have a self.included block — that's what makes it an argument-providing mixin
+  if (!content.includes("self.included")) {
+    return null
+  }
+
+  // Must have at least one argument declaration
+  if (!content.includes("argument ")) {
+    return null
+  }
+
+  // Collect module names in order of declaration to build the full path
+  const modules: string[] = []
+  const moduleRegex = /module\s+([\w:]+)/g
+  let modMatch: RegExpExecArray | null
+  while ((modMatch = moduleRegex.exec(content)) !== null) {
+    modules.push(modMatch[1])
+  }
+
+  if (modules.length === 0) {
+    return null
+  }
+
+  const modulePath = modules.join("::")
+
+  // Extract the self.included / class_eval block content
+  // We grab everything between self.included and its matching end so that
+  // argument declarations inside `do...end` validation blocks are included.
+  const includedStart = content.indexOf("self.included")
+  const includedContent = content.substring(includedStart)
+
+  const args = parseArguments(includedContent)
+  if (args.length === 0) {
+    return null
+  }
+
+  return { modulePath, arguments: args }
+}
+
+/**
+ * Build a mixin registry from all loaded Ruby files.
+ * Maps full Ruby module path → argument list for every mixin that provides arguments.
+ */
+export function parseMixinRegistry(
+  files: Map<string, string>
+): Map<string, ArgumentDefinition[]> {
+  const registry = new Map<string, ArgumentDefinition[]>()
+  for (const [, content] of files) {
+    const mixin = parseMixinArguments(content)
+    if (mixin) {
+      registry.set(mixin.modulePath, mixin.arguments)
+    }
+  }
+  return registry
+}
+
+/**
  * Parse a Ruby resolver class (BaseQuery subclass) into a ResolverDefinition.
  * These classes define `argument` declarations and a `type` return.
  */
 export function parseResolverDefinition(
   fileContent: string,
-  fileName: string
+  fileName: string,
+  mixinRegistry: Map<string, ArgumentDefinition[]> = new Map()
 ): ResolverDefinition | null {
   const lines = fileContent.split("\n")
   const contentLines = lines.filter(l => !l.trim().startsWith("#"))
@@ -909,8 +988,38 @@ export function parseResolverDefinition(
     returnTypeNullable = nullMatch ? nullMatch[1] === "true" : true
   }
 
-  // Parse arguments
+  // Parse arguments declared directly on this resolver
   const args = parseArguments(content)
+
+  // Detect `include SomeModule` statements and merge arguments from the mixin registry.
+  // Ruby resolves unqualified module names in the enclosing namespace first, then
+  // outer scopes; we try the fully-qualified path first (e.g. NitroGraphql::PaginationArguments
+  // from `include NitroGraphql::PaginationArguments`) and also fall back to a
+  // namespace-scoped candidate when the include is unqualified.
+  const includeRegex = /\binclude\s+([\w:]+)/g
+  let includeMatch: RegExpExecArray | null
+  const seenMixinArgs = new Set<string>(args.map(a => a.name))
+  while ((includeMatch = includeRegex.exec(content)) !== null) {
+    const rawInclude = includeMatch[1].replace(/^::/, "")
+    // Try the literal include path first, then scoped variants
+    const candidates = [rawInclude]
+    if (!rawInclude.includes("::") && modules.length > 0) {
+      candidates.push([...modules, rawInclude].join("::"))
+    }
+    for (const candidate of candidates) {
+      const mixinArgs = mixinRegistry.get(candidate)
+      if (mixinArgs) {
+        for (const arg of mixinArgs) {
+          // Own arguments take precedence over mixin arguments
+          if (!seenMixinArgs.has(arg.name)) {
+            args.push(arg)
+            seenMixinArgs.add(arg.name)
+          }
+        }
+        break
+      }
+    }
+  }
 
   // Extract description
   const description = extractDescription(content)
@@ -2185,6 +2294,10 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
     `[NitroGraphQL] Ruby files found: ${[...files.keys()].map(f => f.split("/").slice(-3).join("/")).join(", ")}`
   )
 
+  // Build a registry of mixin modules that contribute arguments (e.g. PaginationArguments).
+  // This powers `include SomeModule` resolution in resolver files.
+  const mixinRegistry = parseMixinRegistry(files)
+
   const typeDefs: GraphQLTypeDefinition[] = []
   const resolvers: ResolverDefinition[] = []
   const skippedFiles: string[] = []
@@ -2202,7 +2315,7 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
       }
 
       // Try parsing as a resolver
-      const resolver = parseResolverDefinition(content, filePath)
+      const resolver = parseResolverDefinition(content, filePath, mixinRegistry)
       if (resolver) {
         resolvers.push(resolver)
         logger.log(

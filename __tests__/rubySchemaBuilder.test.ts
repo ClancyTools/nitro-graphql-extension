@@ -14,6 +14,8 @@ import {
   validateSchemaIntegrity,
   buildSchemaFromDirectory,
   snakeToCamel,
+  parseMixinArguments,
+  parseMixinRegistry,
   GraphQLTypeDefinition,
   ResolverDefinition,
   ResolverRegistration,
@@ -3061,5 +3063,250 @@ describe("findRegistrationFiles", () => {
   it("should return empty array when no components directory", () => {
     const files = findRegistrationFiles(tmpDir)
     expect(files).toEqual([])
+  })
+})
+
+// ── Mixin Argument Parsing ─────────────────────────────────────────────────────
+
+describe("parseMixinArguments", () => {
+  const PAGINATION_MIXIN = `
+module NitroGraphql
+  module PaginationArguments
+    def self.included(cls)
+      cls.class_eval do
+        argument :page, Integer, required: false, description: "Current page", default_value: 1
+        argument :per_page, Integer,
+                 required: false,
+                 description: "Number of results per page",
+                 default_value: 100 do
+                   validates numericality: { greater_than: 0, less_than_or_equal_to: 100 }
+                 end
+      end
+    end
+  end
+end
+`
+
+  it("should parse arguments from a self.included mixin module", () => {
+    const result = parseMixinArguments(PAGINATION_MIXIN)
+    expect(result).not.toBeNull()
+    expect(result!.modulePath).toBe("NitroGraphql::PaginationArguments")
+    expect(result!.arguments).toHaveLength(2)
+
+    const names = result!.arguments.map(a => a.name)
+    expect(names).toContain("page")
+    expect(names).toContain("perPage")
+  })
+
+  it("should return null for a file without self.included", () => {
+    const result = parseMixinArguments(`
+module Foo
+  module Bar
+    def some_method
+    end
+  end
+end
+`)
+    expect(result).toBeNull()
+  })
+
+  it("should return null for a file with self.included but no arguments", () => {
+    const result = parseMixinArguments(`
+module Foo
+  module Bar
+    def self.included(cls)
+      cls.class_eval do
+        # just a comment, no arguments
+      end
+    end
+  end
+end
+`)
+    expect(result).toBeNull()
+  })
+})
+
+describe("parseMixinRegistry", () => {
+  it("should build a registry from a map of file contents", () => {
+    const files = new Map<string, string>([
+      [
+        "pagination_arguments.rb",
+        `
+module NitroGraphql
+  module PaginationArguments
+    def self.included(cls)
+      cls.class_eval do
+        argument :page, Integer, required: false, default_value: 1
+        argument :per_page, Integer, required: false, default_value: 100
+      end
+    end
+  end
+end
+`,
+      ],
+      ["unrelated.rb", "class Foo < Bar; end"],
+    ])
+
+    const registry = parseMixinRegistry(files)
+    expect(registry.size).toBe(1)
+    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
+
+    const args = registry.get("NitroGraphql::PaginationArguments")!
+    expect(args.map(a => a.name)).toEqual(["page", "perPage"])
+  })
+})
+
+describe("parseResolverDefinition with mixin arguments", () => {
+  const PAGINATION_MIXIN_ARGS = [
+    {
+      name: "page",
+      type: "Int",
+      required: false,
+      isList: false,
+      defaultValue: "1",
+    },
+    {
+      name: "perPage",
+      type: "Int",
+      required: false,
+      isList: false,
+      defaultValue: "100",
+    },
+  ]
+
+  it("should merge arguments from included mixin modules", () => {
+    const mixinRegistry = new Map([
+      ["NitroGraphql::PaginationArguments", PAGINATION_MIXIN_ARGS],
+    ])
+
+    const resolver = parseResolverDefinition(
+      `
+module Directory
+  module Graphql
+    class CommonPassphrasesQuery < NitroGraphql::BaseQuery
+      include NitroGraphql::PaginationArguments
+
+      description "Library of common passphrases in Nitro."
+
+      type ::Directory::Graphql::CommonPassphraseResults, null: false
+
+      def resolve(per_page:, page:)
+      end
+    end
+  end
+end
+`,
+      "directory/common_passphrases_query.rb",
+      mixinRegistry
+    )
+
+    expect(resolver).not.toBeNull()
+
+    const argNames = resolver!.arguments.map(a => a.name)
+    expect(argNames).toContain("page")
+    expect(argNames).toContain("perPage")
+  })
+
+  it("should not duplicate arguments already declared on the resolver", () => {
+    const mixinRegistry = new Map([
+      ["NitroGraphql::PaginationArguments", PAGINATION_MIXIN_ARGS],
+    ])
+
+    const resolver = parseResolverDefinition(
+      `
+module Foo
+  module Graphql
+    class MyQuery < NitroGraphql::BaseQuery
+      include NitroGraphql::PaginationArguments
+
+      type String, null: false
+
+      argument :page, Integer, required: false, default_value: 2
+
+      def resolve(page:, per_page:); end
+    end
+  end
+end
+`,
+      "foo/my_query.rb",
+      mixinRegistry
+    )
+
+    expect(resolver).not.toBeNull()
+    const argNames = resolver!.arguments.map(a => a.name)
+    // page declared on resolver itself — should appear only once
+    expect(argNames.filter(n => n === "page")).toHaveLength(1)
+    // perPage comes from mixin
+    expect(argNames).toContain("perPage")
+  })
+
+  it("should surface mixin arguments in the built schema", () => {
+    const paginationMixin = `
+module NitroGraphql
+  module PaginationArguments
+    def self.included(cls)
+      cls.class_eval do
+        argument :page, Integer, required: false, default_value: 1
+        argument :per_page, Integer, required: false, default_value: 100
+      end
+    end
+  end
+end
+`
+    const mixinRegistry = parseMixinRegistry(
+      new Map([["pagination_arguments.rb", paginationMixin]])
+    )
+
+    const resultsType = parseRubyTypeDefinition(
+      `
+module Directory
+  module Graphql
+    class CommonPassphraseResults < NitroGraphql::Types::BaseObject
+      graphql_name "CommonPassphraseResults"
+      field :list, [String]
+      field :page, Int
+      field :per_page, Int
+    end
+  end
+end
+`,
+      "directory/common_passphrase_results.rb"
+    )!
+
+    const resolver = parseResolverDefinition(
+      `
+module Directory
+  module Graphql
+    class CommonPassphrasesQuery < NitroGraphql::BaseQuery
+      include NitroGraphql::PaginationArguments
+
+      type ::Directory::Graphql::CommonPassphraseResults, null: false
+
+      def resolve(per_page:, page:); end
+    end
+  end
+end
+`,
+      "directory/common_passphrases_query.rb",
+      mixinRegistry
+    )!
+
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "commonPassphrases",
+        resolverClassName: "Directory::Graphql::CommonPassphrasesQuery",
+        target: "query",
+      },
+    ]
+
+    const schema = buildGraphQLSchema([resultsType], [resolver], registrations)
+
+    const queryType = schema.getQueryType()!
+    const field = queryType.getFields()["commonPassphrases"]
+    expect(field).toBeDefined()
+
+    const argNames = field.args.map((a: any) => a.name)
+    expect(argNames).toContain("page")
+    expect(argNames).toContain("perPage")
   })
 })
