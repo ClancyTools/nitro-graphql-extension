@@ -1887,6 +1887,45 @@ describe("parseArguments", () => {
     expect(args.length).toBe(1)
     expect(args[0].type).toBe("ServiceAppointmentInput")
   })
+
+  it("should parse multi-line argument definitions", () => {
+    const content = `argument :with_exclude_from_directory,
+               Boolean,
+               required: false,
+               default_value: false,
+               description: "Set to true if you want excludeFromDirectory in your results."
+argument :search, NitroGraphql::Types::Json, required: false
+argument :through, String, required: false`
+    const args = parseArguments(content)
+    expect(args.length).toBe(3)
+
+    // First arg is multi-line with default_value
+    expect(args[0].name).toBe("withExcludeFromDirectory")
+    expect(args[0].type).toBe("Boolean")
+    expect(args[0].required).toBe(false)
+    expect(args[0].defaultValue).toBe("false")
+
+    // Second arg: optional
+    expect(args[1].name).toBe("search")
+    expect(args[1].required).toBe(false)
+
+    // Third arg: optional
+    expect(args[2].name).toBe("through")
+    expect(args[2].required).toBe(false)
+  })
+
+  it("should parse argument named 'type' without consuming the return type declaration", () => {
+    const content = `argument :type, String
+
+type ::ContactCenter::Graphql::CallLoopStatusType, null: false
+
+def resolve(type:)`
+    const args = parseArguments(content)
+    expect(args.length).toBe(1)
+    expect(args[0].name).toBe("type")
+    expect(args[0].type).toBe("String")
+    expect(args[0].required).toBe(true)
+  })
 })
 
 describe("parseRegistrationFile", () => {

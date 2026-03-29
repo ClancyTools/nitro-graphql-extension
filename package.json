@@ -4,6 +4,7 @@
   "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Builds schema directly from Ruby GraphQL type definitions — no running Rails server required.",
   "version": "0.0.2",
   "publisher": "ClancyTools",
+  "icon": "nitro-graphql-logo.png",
   "engines": {
     "vscode": "^1.85.0"
   },

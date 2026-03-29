@@ -780,15 +780,26 @@ export function parseResolverDefinition(
 /**
  * Parse `argument` declarations from Ruby resolver content.
  * Format: `argument :name, Type, required: false, default_value: "x"`
+ * Supports multi-line argument definitions.
  */
 export function parseArguments(content: string): ArgumentDefinition[] {
   const args: ArgumentDefinition[] = []
-  const argRegex = /argument\s+:(\w+)\s*,\s*(.+)/g
 
-  let match: RegExpExecArray | null
-  while ((match = argRegex.exec(content)) !== null) {
-    const argName = match[1]
-    const rest = match[2]
+  // Split content by "argument " to find each argument declaration.
+  // Each part starts with `:name, ...` after the split.
+  const parts = content.split(/\bargument\s+/)
+
+  for (const part of parts) {
+    // Skip empty parts and the first part (before any "argument" keyword)
+    if (!part.trim()) continue
+
+    // Extract argument name (first :word)
+    const nameMatch = part.match(/^:(\w+)\s*,/)
+    if (!nameMatch) continue
+
+    const argName = nameMatch[1]
+    // Get everything after ":name,"
+    const rest = part.substring(nameMatch[0].length)
 
     const parsed = parseArgumentRest(rest)
     if (parsed) {
@@ -811,20 +822,34 @@ interface ParsedArgumentRest {
 
 /**
  * Parse the remainder of an argument declaration after the name.
+ * Handles both single-line and multi-line argument definitions.
  */
 function parseArgumentRest(rest: string): ParsedArgumentRest | null {
-  const isList = rest.trim().startsWith("[")
+  // Truncate at the next `argument`, `def`, `type`, `private`, `protected`, or `end` keyword
+  // to avoid consuming content from subsequent methods, type declarations, or arguments
+  const terminatorMatch = rest.match(
+    /(?=\bargument\s+|\bdef\s+|\btype\s+|\bprivate\s+|\bprotected\s+|\bend\b)/
+  )
+  let workingContent = rest
+  if (terminatorMatch && terminatorMatch.index !== undefined) {
+    workingContent = rest.substring(0, terminatorMatch.index)
+  }
+
+  // Clean up the content: normalize newlines and multiple spaces
+  const cleaned = workingContent.replace(/\s+/g, " ").trim()
+
+  const isList = cleaned.startsWith("[")
 
   let typePart: string
   if (isList) {
-    const bracketMatch = rest.match(/^\s*\[([^\]]+)\]/)
+    const bracketMatch = cleaned.match(/^\s*\[([^\]]+)\]/)
     if (!bracketMatch) {
       return null
     }
     typePart = bracketMatch[1].trim()
   } else {
     // Get everything up to first comma or end
-    const parts = rest.split(",")
+    const parts = cleaned.split(",")
     typePart = parts[0].trim()
   }
 
@@ -834,6 +859,7 @@ function parseArgumentRest(rest: string): ParsedArgumentRest | null {
   }
 
   // Parse required option — default is true for arguments
+  // Use the original `rest` string for regex matching since it has newlines
   const requiredMatch = rest.match(/required:\s*(true|false)/)
   const required = requiredMatch ? requiredMatch[1] === "true" : true
 
