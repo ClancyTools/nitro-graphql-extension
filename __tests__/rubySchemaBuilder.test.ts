@@ -10,6 +10,7 @@ import {
   findGraphQLDirectories,
   findRegistrationFiles,
   loadGraphQLTypeFiles,
+  loadMixinFiles,
   buildGraphQLSchema,
   validateSchemaIntegrity,
   buildSchemaFromDirectory,
@@ -3153,6 +3154,111 @@ end
 
     const args = registry.get("NitroGraphql::PaginationArguments")!
     expect(args.map(a => a.name)).toEqual(["page", "perPage"])
+  })
+})
+
+describe("loadMixinFiles", () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nitro-mixin-test-"))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("should find mixin files in lib/ directories that the graphql scanner misses", () => {
+    // Simulate: components/nitro_graphql/lib/nitro_graphql/pagination_arguments.rb
+    const libDir = path.join(tmpDir, "lib", "nitro_graphql")
+    fs.mkdirSync(libDir, { recursive: true })
+
+    fs.writeFileSync(
+      path.join(libDir, "pagination_arguments.rb"),
+      `
+module NitroGraphql
+  module PaginationArguments
+    def self.included(cls)
+      cls.class_eval do
+        argument :page, Integer, required: false, default_value: 1
+        argument :per_page, Integer, required: false, default_value: 100
+      end
+    end
+  end
+end
+`
+    )
+
+    // Also create a non-mixin file in the lib dir to confirm it's filtered out
+    fs.writeFileSync(
+      path.join(libDir, "base_query.rb"),
+      `
+module NitroGraphql
+  class BaseQuery < GraphQL::Schema::Resolver
+  end
+end
+`
+    )
+
+    // Also create a graphql dir file to confirm it's NOT double-scanned from loadMixinFiles
+    const graphqlDir = path.join(tmpDir, "graphql")
+    fs.mkdirSync(graphqlDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(graphqlDir, "some_type.rb"),
+      `
+class SomeType < NitroGraphql::Types::BaseObject
+  field :id, ID
+end
+`
+    )
+
+    const mixinFiles = loadMixinFiles(tmpDir)
+
+    // Should find pagination_arguments.rb (has self.included + argument)
+    expect(mixinFiles.size).toBe(1)
+    const content = [...mixinFiles.values()][0]
+    expect(content).toContain("PaginationArguments")
+
+    // The registry built from these files should include the mixin
+    const registry = parseMixinRegistry(mixinFiles)
+    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
+    const args = registry.get("NitroGraphql::PaginationArguments")!
+    expect(args.map(a => a.name)).toContain("page")
+    expect(args.map(a => a.name)).toContain("perPage")
+  })
+
+  it("should find mixin files in nested lib subdirectory matching component layout", () => {
+    // Simulate: components/nitro_graphql/lib/nitro_graphql/concerns/pagination_arguments.rb
+    const nestedLibDir = path.join(
+      tmpDir,
+      "components",
+      "nitro_graphql",
+      "lib",
+      "nitro_graphql",
+      "concerns"
+    )
+    fs.mkdirSync(nestedLibDir, { recursive: true })
+
+    fs.writeFileSync(
+      path.join(nestedLibDir, "pagination_arguments.rb"),
+      `
+module NitroGraphql
+  module PaginationArguments
+    def self.included(cls)
+      cls.class_eval do
+        argument :page, Integer, required: false, default_value: 1
+      end
+    end
+  end
+end
+`
+    )
+
+    const mixinFiles = loadMixinFiles(tmpDir)
+    expect(mixinFiles.size).toBe(1)
+
+    const registry = parseMixinRegistry(mixinFiles)
+    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
   })
 })
 

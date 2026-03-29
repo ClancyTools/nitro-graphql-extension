@@ -204,6 +204,65 @@ function loadRbFilesRecursive(dir: string, files: Map<string, string>): void {
   }
 }
 
+/**
+ * Load Ruby files from lib/ directories that look like argument-providing mixins.
+ * These live outside the normal graphql/ scan path — e.g.
+ *   components/nitro_graphql/lib/nitro_graphql/pagination_arguments.rb
+ * Only files that actually contain both `self.included` and `argument` are loaded,
+ * so this scan is cheap even for large codebases.
+ */
+export function loadMixinFiles(basePath: string): Map<string, string> {
+  const files = new Map<string, string>()
+
+  function walk(dir: string, insideLibDir: boolean, depth: number): void {
+    if (depth > 12) return
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    // We're "inside a lib dir" once we've descended into a directory named `lib`
+    const nowInsideLib = insideLibDir || path.basename(dir) === "lib"
+
+    for (const entry of entries) {
+      if (
+        entry.name === "node_modules" ||
+        entry.name === ".git" ||
+        entry.name === "tmp" ||
+        entry.name === "vendor" ||
+        entry.name === "spec" ||
+        entry.name === "test"
+      ) {
+        continue
+      }
+
+      const fullPath = path.join(dir, entry.name)
+
+      if (entry.isDirectory()) {
+        walk(fullPath, nowInsideLib, depth + 1)
+      } else if (entry.isFile() && entry.name.endsWith(".rb") && nowInsideLib) {
+        try {
+          const content = fs.readFileSync(fullPath, "utf-8")
+          // Only keep files that are actually argument-providing mixins
+          if (
+            content.includes("self.included") &&
+            content.includes("argument ")
+          ) {
+            files.set(fullPath, content)
+          }
+        } catch {
+          // ignore unreadable files
+        }
+      }
+    }
+  }
+
+  walk(basePath, false, 0)
+  return files
+}
+
 // ── Ruby Parsing ───────────────────────────────────────────────────────────────
 
 /**
@@ -2295,8 +2354,12 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   )
 
   // Build a registry of mixin modules that contribute arguments (e.g. PaginationArguments).
-  // This powers `include SomeModule` resolution in resolver files.
-  const mixinRegistry = parseMixinRegistry(files)
+  // Mixin files (e.g. NitroGraphql::PaginationArguments) typically live in lib/ directories
+  // that are NOT under a graphql/ subdirectory, so they aren't picked up by the normal
+  // file scan.  loadMixinFiles() does a separate, targeted scan of lib/ directories,
+  // only loading files that contain both `self.included` and `argument`.
+  const mixinFiles = loadMixinFiles(basePath)
+  const mixinRegistry = parseMixinRegistry(new Map([...files, ...mixinFiles]))
 
   const typeDefs: GraphQLTypeDefinition[] = []
   const resolvers: ResolverDefinition[] = []
