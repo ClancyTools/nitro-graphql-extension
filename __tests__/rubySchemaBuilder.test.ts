@@ -2130,6 +2130,79 @@ end
     expect(phoneNumberFields["extension"]).toBeDefined()
     expect(phoneNumberFields["number"]).toBeDefined()
   })
+
+  it("should handle field with do...end block for inline arguments", () => {
+    // A field can open a `do...end` block to declare inline arguments:
+    //   field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
+    //     argument :date, NitroGraphql::Types::Date, required: false
+    //   end
+    // The ` do` suffix must not corrupt the type name, and the argument must be wired up.
+    const payPeriodSummaryType = parseRubyTypeDefinition(
+      `
+module Craftsman
+  module Graphql
+    class CraftsmanPayPeriodSummaryType < NitroGraphql::Types::BaseObject
+      graphql_name "CraftsmanPayPeriodSummary"
+      description "A craftsman pay period summary"
+
+      field :id, ID, null: false
+      field :total_pay, Float, null: false
+    end
+  end
+end
+`,
+      "craftsman/craftsman_pay_period_summary_type.rb"
+    )!
+
+    const craftsmanType = parseRubyTypeDefinition(
+      `
+module Craftsman
+  module Graphql
+    class CraftsmanType < NitroGraphql::Types::BaseObject
+      graphql_name "Craftsman"
+      description "A craftsman"
+
+      field :id, ID, null: false
+      field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
+        argument :date, String, required: false
+      end
+    end
+  end
+end
+`,
+      "craftsman/craftsman_type.rb"
+    )!
+
+    const typeDefs = [
+      payPeriodSummaryType,
+      craftsmanType,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+
+    const craftsmanGqlType = schema.getType("Craftsman") as any
+    expect(craftsmanGqlType).toBeDefined()
+    const fields = craftsmanGqlType.getFields()
+
+    // Field must exist and resolve to CraftsmanPayPeriodSummary, not unknown
+    const field = fields["payPeriodSummary"]
+    expect(field).toBeDefined()
+
+    let elementType: any = field.type
+    while (elementType.ofType) elementType = elementType.ofType
+    expect(elementType.name).toBe("CraftsmanPayPeriodSummary")
+
+    // The inline argument `date` must be wired up on the field
+    const dateArg = field.args?.find((a: any) => a.name === "date")
+    expect(dateArg).toBeDefined()
+
+    // CraftsmanPayPeriodSummary must have its own fields
+    const summaryType = schema.getType("CraftsmanPayPeriodSummary") as any
+    expect(summaryType).toBeDefined()
+    const summaryFields = summaryType.getFields()
+    expect(summaryFields["id"]).toBeDefined()
+    expect(summaryFields["totalPay"]).toBeDefined()
+  })
 })
 
 describe("resolver namespace collision", () => {

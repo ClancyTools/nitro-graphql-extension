@@ -625,6 +625,13 @@ interface ParsedFieldRest {
  * e.g. "String, null: false, access: :public"
  */
 function parseFieldRest(rest: string): ParsedFieldRest | null {
+  // Strip trailing `do` keyword — some field declarations open a `do...end`
+  // block for inline argument declarations, e.g.:
+  //   field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
+  // The block arguments are handled separately by parseFieldBlockArgs; here we
+  // only care about the type and field-level options.
+  rest = rest.replace(/\s+do\s*$/, "")
+
   // Detect `field :name, resolver: Class` pattern.
   // When a field delegates to a standalone resolver class, store the class name
   // so the schema builder can wire up its return type and arguments at build time.
