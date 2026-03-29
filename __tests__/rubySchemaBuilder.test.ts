@@ -176,6 +176,25 @@ module Warranty
 end
 `
 
+const AGENT_STATS_CONNECTION_QUERY_FIXTURE = `
+module Warranty
+  module Graphql
+    class AgentStatsQuery < NitroGraphql::BaseQuery
+      description "Get a list of warranty agents using the provided IDs"
+
+      type ::Warranty::Graphql::AgentStatsType.connection_type, null: false
+
+      argument :agent_ids, [ID]
+      argument :start_date, String, required: false
+      argument :end_date, String, required: false
+
+      def resolve(agent_ids:, start_date: nil, end_date: nil)
+      end
+    end
+  end
+end
+`
+
 const AVAILABLE_ROUTES_QUERY_FIXTURE = `
 module Warranty
   module Graphql
@@ -266,6 +285,34 @@ module Warranty
 end
 `
 
+const TIME_OFF_BALANCE_TYPE_FIXTURE = `
+module Attendance
+  module Graphql
+    class TimeOffBalanceType < NitroGraphql::Types::BaseObject
+      field :hours, Float
+      field :balance_type, String
+    end
+  end
+end
+`
+
+const TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE = `
+module Attendance
+  module Graphql
+    class TimeOffBalanceQuery < NitroGraphql::BaseQuery
+      description "Returns time off balance hours"
+
+      type ::Attendance::Graphql::TimeOffBalanceType.connection_type, null: false
+      argument :bucket, String
+      argument :search, NitroGraphql::Types::Json, required: false
+
+      def resolve(bucket:, search: {})
+      end
+    end
+  end
+end
+`
+
 const SERVICE_APPOINTMENT_INPUT_TYPE_FIXTURE = `
 module Warranty
   module Graphql
@@ -275,6 +322,225 @@ module Warranty
       argument :project_task_id, ID
       argument :cant_service_reason, String, required: false
       argument :notes, String, required: false
+    end
+  end
+end
+`
+
+const CALENDAR_EVENT_TYPE_FIXTURE = `
+module BrandHeadlines
+  module Graphql
+    class CalendarEventType < ::NitroGraphql::Types::BaseObject
+      graphql_name "BrandHeadlinesCalendarEvent"
+
+      field :id, ID, null: false
+      field :title, String
+      field :location, String
+      field :start_date, NitroGraphql::Types::DateTime
+      field :end_date, NitroGraphql::Types::DateTime
+      field :details, String
+    end
+  end
+end
+`
+
+const CALENDAR_EVENT_INPUT_FIXTURE = `
+module BrandHeadlines
+  module Graphql
+    class CalendarEventInput < NitroGraphql::Types::BaseInputObject
+      graphql_name "BrandHeadlinesCalendarEventInput"
+
+      argument :id, ID, required: false
+      argument :title, String
+      argument :location, String
+      argument :start_date, NitroGraphql::Types::DateTime
+      argument :end_date, NitroGraphql::Types::DateTime
+      argument :details, String, required: false
+    end
+  end
+end
+`
+
+// A conflicting type in a different namespace with the same class name
+const SPACES_CALENDAR_EVENT_TYPE_FIXTURE = `
+module Spaces
+  module Graphql
+    class CalendarEventType < NitroGraphql::Types::BaseObject
+      graphql_name "CalendarEvent"
+
+      field :id, ID, null: false
+      field :summary, String, null: false
+      field :event_start, GraphQL::Types::ISO8601DateTime, null: false
+    end
+  end
+end
+`
+
+// A conflicting input type in a different namespace with the same class name
+const SPACES_CALENDAR_EVENT_INPUT_FIXTURE = `
+module Spaces
+  module Graphql
+    class CalendarEventInput < NitroGraphql::Types::BaseInputObject
+      graphql_name "CalendarEventInput"
+
+      argument :summary, String
+      argument :description, String, required: false
+    end
+  end
+end
+`
+
+const CREATE_OR_UPDATE_CALENDAR_EVENT_MUTATION_FIXTURE = `
+module BrandHeadlines
+  module Graphql
+    class CreateOrUpdateCalendarEventMutation < NitroGraphql::BaseQuery
+      description "Creates or updates a calendar event"
+
+      type ::BrandHeadlines::Graphql::CalendarEventType, null: false
+      argument :input, ::BrandHeadlines::Graphql::CalendarEventInput
+
+      def resolve(input:)
+        input_hash = input.to_h
+        if input_hash[:id].present?
+          calendar_event = ::BrandHeadlines::CalendarEvent.find(input_hash.delete(:id))
+          calendar_event.update!(input_hash)
+          calendar_event
+        else
+          ::BrandHeadlines::CalendarEvent.create!(input_hash)
+        end
+      end
+    end
+  end
+end
+`
+
+// ── EquipmentAsset disambiguation fixtures ─────────────────────────────────────
+
+// Directory's richer version (graphql_name differs from normalized classBasedName)
+const DIRECTORY_EQUIPMENT_ASSET_TYPE_FIXTURE = `
+module Directory
+  module Graphql
+    class EquipmentAssetType < NitroGraphql::Types::BaseObject
+      graphql_name "equipment_asset"
+      description "A piece of equipment assigned to a user"
+
+      field :id, ID, null: false
+      field :asset_number, String, null: false
+      field :serial_number, String
+      field :status, String
+    end
+  end
+end
+`
+
+// A separate, simpler type in a different namespace with the same class name
+const EQUIPMENT_ASSETS_EQUIPMENT_ASSET_TYPE_FIXTURE = `
+module EquipmentAssets
+  module Graphql
+    class EquipmentAssetType < NitroGraphql::Types::BaseObject
+      graphql_name "EquipmentAsset"
+      description "Equipment Asset info"
+
+      field :id, ID, null: false
+      field :type, String
+      field :asset_number, String, null: false
+    end
+  end
+end
+`
+
+// Employee type referencing Directory's version via fully-qualified path
+const EMPLOYEE_WITH_EQUIPMENT_TYPE_FIXTURE = `
+module Directory
+  module Graphql
+    class EmployeeType < NitroGraphql::Types::BaseObject
+      graphql_name "Employee"
+
+      field :id, ID, null: false
+      field :name, String, null: false
+      field :equipment_assets, [::Directory::Graphql::EquipmentAssetType]
+    end
+  end
+end
+`
+
+// ── Nested resolver field fixtures ─────────────────────────────────────────────
+
+const SUPPORT_PAGINATED_RESULT_TYPE_FIXTURE = `
+module Support
+  module Graphql
+    class PaginatedTicketsResultType < NitroGraphql::Types::BaseObject
+      graphql_name "PaginatedTicketsResult"
+
+      field :total_count, Int, null: false
+      field :tickets, [::Support::Graphql::TicketType]
+    end
+  end
+end
+`
+
+const SUPPORT_TICKET_TYPE_FIXTURE = `
+module Support
+  module Graphql
+    class TicketType < NitroGraphql::Types::BaseObject
+      graphql_name "SupportTicket"
+
+      field :id, ID, null: false
+      field :ticket_number, String, null: false
+    end
+  end
+end
+`
+
+const PAGINATED_TICKETS_QUERY_FIXTURE = `
+module Support
+  module Graphql
+    class PaginatedTicketsQuery < NitroGraphql::BaseQuery
+      description "Returns paginated support tickets"
+
+      type ::Support::Graphql::PaginatedTicketsResultType, null: false
+      argument :search, NitroGraphql::Types::Json, required: false
+      argument :page, Int
+      argument :per_page, Int
+
+      def resolve(search: nil, page: 1, per_page: 10)
+        # implementation
+      end
+    end
+  end
+end
+`
+
+// DomainType with a field backed by a resolver class
+const SUPPORT_DOMAIN_TYPE_FIXTURE = `
+module Support
+  module Graphql
+    class DomainType < NitroGraphql::Types::BaseObject
+      graphql_name "SupportTicketDomain"
+
+      field :id, ID, null: false
+      field :name, String, null: false
+      field :paginated_tickets, resolver: ::Support::Graphql::PaginatedTicketsQuery
+    end
+  end
+end
+`
+
+// Test fixture for camelize: false option
+const APPOINTMENT_TYPE_FIXTURE = `
+module Scheduling
+  module Graphql
+    class AppointmentType < NitroGraphql::Types::BaseObject
+      graphql_name "Appointment"
+      description "A scheduled appointment"
+
+      field :id, ID, null: false
+      field :title, String, null: false
+      # This field should NOT be camelCased because of camelize: false
+      field :new_appts_plan, String, camelize: false
+      # This field should be camelCased normally
+      field :visit_time, String, null: false
+      field :status_code, String, camelize: false
     end
   end
 end
@@ -677,6 +943,37 @@ end
     expect(productField).toBeDefined()
     expect(productField!.type).toBe("Product")
   })
+
+  it("should respect camelize: false on field declarations", () => {
+    // When a field declares camelize: false, its name should NOT be camelCased
+    const def = parseRubyTypeDefinition(
+      APPOINTMENT_TYPE_FIXTURE,
+      "appointment_type.rb"
+    )
+    expect(def).not.toBeNull()
+
+    // Field with camelize: false must keep snake_case
+    const newApptsField = def!.fields.find(f => f.name === "new_appts_plan")
+    expect(newApptsField).toBeDefined()
+    expect(newApptsField!.type).toBe("String")
+    expect(newApptsField!.camelize).toBe(false)
+
+    const statusCodeField = def!.fields.find(f => f.name === "status_code")
+    expect(statusCodeField).toBeDefined()
+    expect(statusCodeField!.type).toBe("String")
+    expect(statusCodeField!.camelize).toBe(false)
+
+    // Field without camelize: false should be camelCased
+    const visitTimeField = def!.fields.find(f => f.name === "visitTime")
+    expect(visitTimeField).toBeDefined()
+    expect(visitTimeField!.type).toBe("String")
+    // camelize should be true (or omitted, which defaults to true)
+    expect(visitTimeField!.camelize).not.toBe(false)
+
+    // Wrong casing should NOT exist
+    expect(def!.fields.find(f => f.name === "newApptsPlan")).toBeUndefined()
+    expect(def!.fields.find(f => f.name === "visit_time")).toBeUndefined()
+  })
 })
 
 describe("parseAccessLevel", () => {
@@ -929,8 +1226,182 @@ describe("buildGraphQLSchema", () => {
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
     const queryType = schema.getQueryType()!
     const field = queryType.getFields()["agentStats"]
-    // The return type should be a list (non-null list of non-null WarrantyAgentStats)
+    // Plain list returns are NOT wrapped in a Connection type
     expect(field.type.toString()).toContain("WarrantyAgentStats")
+    expect(field.type.toString()).not.toContain("Connection")
+  })
+
+  it("should wrap .connection_type resolver in a Relay Connection type", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        AGENT_STATS_CONNECTION_QUERY_FIXTURE,
+        "agent_stats_query.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "agentStats",
+        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        target: "query",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const queryType = schema.getQueryType()!
+    const field = queryType.getFields()["agentStats"]
+
+    // Return type should be a Connection, not a plain list
+    expect(field.type.toString()).toContain("Connection")
+
+    // Connection type should have nodes, edges, pageInfo, totalEntries
+    const connectionType = schema.getType("WarrantyAgentStatsConnection") as any
+    expect(connectionType).toBeDefined()
+    const connectionFields = connectionType.getFields()
+    expect(connectionFields["nodes"]).toBeDefined()
+    expect(connectionFields["edges"]).toBeDefined()
+    expect(connectionFields["pageInfo"]).toBeDefined()
+    expect(connectionFields["totalEntries"]).toBeDefined()
+
+    // Edge type should have node and cursor
+    const edgeType = schema.getType("WarrantyAgentStatsEdge") as any
+    expect(edgeType).toBeDefined()
+    const edgeFields = edgeType.getFields()
+    expect(edgeFields["node"]).toBeDefined()
+    expect(edgeFields["cursor"]).toBeDefined()
+  })
+
+  it("should add relay connection arguments to .connection_type resolver fields", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        AGENT_STATS_CONNECTION_QUERY_FIXTURE,
+        "agent_stats_query.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "agentStats",
+        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        target: "query",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const field = schema.getQueryType()!.getFields()["agentStats"]
+    const argNames = field.args.map((a: any) => a.name)
+
+    // Standard Relay connection args should be present
+    expect(argNames).toContain("first")
+    expect(argNames).toContain("last")
+    expect(argNames).toContain("before")
+    expect(argNames).toContain("after")
+
+    // Resolver-specific args should also be present
+    expect(argNames).toContain("agentIds")
+    expect(argNames).toContain("startDate")
+    expect(argNames).toContain("endDate")
+  })
+
+  it("should register a built-in PageInfo type with standard Relay fields", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        AGENT_STATS_CONNECTION_QUERY_FIXTURE,
+        "agent_stats_query.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "agentStats",
+        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        target: "query",
+      },
+    ]
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const pageInfoType = schema.getType("PageInfo") as any
+    expect(pageInfoType).toBeDefined()
+    const fields = pageInfoType.getFields()
+    expect(fields["hasNextPage"]).toBeDefined()
+    expect(fields["hasPreviousPage"]).toBeDefined()
+    expect(fields["startCursor"]).toBeDefined()
+    expect(fields["endCursor"]).toBeDefined()
+  })
+
+  it("should not add relay args to scalar-returning resolver fields", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+    ]
+    const fixture = `
+module Warranty
+  module Graphql
+    class CountQuery < NitroGraphql::BaseQuery
+      type Integer, null: false
+      argument :filter, String, required: false
+      def resolve(filter: nil); end
+    end
+  end
+end
+`
+    const resolvers = [parseResolverDefinition(fixture, "count_query.rb")!]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "count",
+        resolverClassName: "Warranty::Graphql::CountQuery",
+        target: "query",
+      },
+    ]
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const field = schema.getQueryType()!.getFields()["count"]
+    const argNames = field.args.map((a: any) => a.name)
+    expect(argNames).not.toContain("first")
+    expect(argNames).not.toContain("after")
+    expect(argNames).toContain("filter")
+  })
+
+  it("should wrap .connection_type resolver in a Relay Connection type", () => {
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        TIME_OFF_BALANCE_TYPE_FIXTURE,
+        "time_off_balance_type.rb"
+      )!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE,
+        "time_off_balance_query.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "timeOffBalance",
+        resolverClassName: "Attendance::Graphql::TimeOffBalanceQuery",
+        target: "query",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const field = schema.getQueryType()!.getFields()["timeOffBalance"]
+
+    // Return type should be a Connection, not a plain object
+    expect(field.type.toString()).toContain("Connection")
+
+    const connectionType = schema.getType("TimeOffBalanceConnection") as any
+    expect(connectionType).toBeDefined()
+    const connectionFields = connectionType.getFields()
+    expect(connectionFields["nodes"]).toBeDefined()
+    expect(connectionFields["pageInfo"]).toBeDefined()
+
+    // relay args should be present
+    const argNames = field.args.map((a: any) => a.name)
+    expect(argNames).toContain("first")
+    expect(argNames).toContain("after")
   })
 
   it("should store resolver class and access in field extensions", () => {
@@ -1090,6 +1561,95 @@ end
     // ReviewEmployee must still exist as a separate type
     const reviewType = schema.getType("ReviewEmployee")
     expect(reviewType).toBeDefined()
+  })
+
+  it("should resolve input type with graphql_name override when referenced in mutation arguments", () => {
+    // This test specifically covers the case where two namespaces define classes
+    // with the same Ruby class name but different graphql_names.  Without rubyPath
+    // disambiguation, BrandHeadlines' CalendarEventType would resolve to Spaces'
+    // CalendarEvent type (since "CalendarEvent" is already in the registry first).
+    const typeDefs = [
+      // Spaces types with shorter graphql_names are registered first (simulating
+      // the production scenario where they'd win the normalizeRubyType lookup)
+      parseRubyTypeDefinition(
+        SPACES_CALENDAR_EVENT_TYPE_FIXTURE,
+        "spaces/calendar_event_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        SPACES_CALENDAR_EVENT_INPUT_FIXTURE,
+        "spaces/calendar_event_input.rb"
+      )!,
+      // BrandHeadlines types with the fully-qualified ::BrandHeadlines::Graphql:: refs
+      parseRubyTypeDefinition(
+        CALENDAR_EVENT_TYPE_FIXTURE,
+        "brand_headlines/calendar_event_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        CALENDAR_EVENT_INPUT_FIXTURE,
+        "brand_headlines/calendar_event_input.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        CREATE_OR_UPDATE_CALENDAR_EVENT_MUTATION_FIXTURE,
+        "brand_headlines/create_or_update_calendar_event_mutation.rb"
+      )!,
+    ]
+    const registrations: ResolverRegistration[] = [
+      {
+        fieldName: "createOrUpdateCalendarEvent",
+        resolverClassName:
+          "BrandHeadlines::Graphql::CreateOrUpdateCalendarEventMutation",
+        target: "mutation",
+      },
+    ]
+
+    const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
+    const mutationType = schema.getMutationType()!
+    const field = mutationType.getFields()["createOrUpdateCalendarEvent"]
+
+    expect(field).toBeDefined()
+
+    // Return type must be exactly BrandHeadlinesCalendarEvent!, NOT CalendarEvent! (Spaces)
+    expect(field.type.toString()).toBe("BrandHeadlinesCalendarEvent!")
+
+    // The input argument should resolve to BrandHeadlinesCalendarEventInput, NOT CalendarEventInput (Spaces)
+    const inputArg = field.args.find(a => a.name === "input")
+    expect(inputArg).toBeDefined()
+    expect(inputArg!.type.toString()).toContain(
+      "BrandHeadlinesCalendarEventInput"
+    )
+
+    // The output type should exist with correct BrandHeadlines fields
+    const outputType = schema.getType("BrandHeadlinesCalendarEvent") as any
+    expect(outputType).toBeDefined()
+    const outputFields = outputType.getFields()
+    expect(outputFields["title"]).toBeDefined()
+    expect(outputFields["location"]).toBeDefined()
+    expect(outputFields["startDate"]).toBeDefined()
+    // Spaces' field (summary) must NOT appear on BrandHeadlines' type
+    expect(outputFields["summary"]).toBeUndefined()
+
+    // The input type should exist with correct BrandHeadlines fields
+    const inputType = schema.getType("BrandHeadlinesCalendarEventInput") as any
+    expect(inputType).toBeDefined()
+    const inputFields = inputType.getFields()
+    expect(inputFields["title"]).toBeDefined()
+    expect(inputFields["location"]).toBeDefined()
+    // Spaces' field (description) must NOT appear on BrandHeadlines' input
+    expect(inputFields["description"]).toBeUndefined()
+
+    // Spaces types must still exist independently with their own fields
+    const spacesOutputType = schema.getType("CalendarEvent") as any
+    expect(spacesOutputType).toBeDefined()
+    const spacesOutputFields = spacesOutputType.getFields()
+    expect(spacesOutputFields["summary"]).toBeDefined()
+
+    const spacesInputType = schema.getType("CalendarEventInput") as any
+    expect(spacesInputType).toBeDefined()
+    const spacesInputFields = spacesInputType.getFields()
+    expect(spacesInputFields["description"]).toBeDefined()
   })
 
   it("should inherit fields from parent type", () => {
@@ -1344,6 +1904,137 @@ end
     // The field must expose the documentTypeCode argument
     const argNames = mediaItemsField.args.map((a: any) => a.name)
     expect(argNames).toContain("documentTypeCode")
+  })
+
+  it("should resolve field type via typeRubyPath when two types share the same classBasedName", () => {
+    // Reproduces the EquipmentAsset collision:
+    //   EquipmentAssets::Graphql::EquipmentAssetType  → graphql_name "EquipmentAsset"
+    //   Directory::Graphql::EquipmentAssetType        → graphql_name "equipment_asset"
+    // Both normalise to "EquipmentAsset" via normalizeRubyType.  Without
+    // typeRubyPath tracking the field would pick up the wrong (simpler) type.
+    const typeDefs = [
+      // Register the simpler type first so it pre-occupies the "EquipmentAsset" name
+      parseRubyTypeDefinition(
+        EQUIPMENT_ASSETS_EQUIPMENT_ASSET_TYPE_FIXTURE,
+        "equipment_assets/equipment_asset_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        DIRECTORY_EQUIPMENT_ASSET_TYPE_FIXTURE,
+        "directory/equipment_asset_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        EMPLOYEE_WITH_EQUIPMENT_TYPE_FIXTURE,
+        "directory/employee_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+
+    const employeeType = schema.getType("Employee") as any
+    expect(employeeType).toBeDefined()
+    const empFields = employeeType.getFields()
+
+    // The field must exist and resolve to "equipment_asset" (Directory's version)
+    const equipField = empFields["equipmentAssets"]
+    expect(equipField).toBeDefined()
+
+    // Unwrap list/non-null wrappers to get the base named type
+    let elementType: any = equipField.type
+    while (elementType.ofType) elementType = elementType.ofType
+    expect(elementType.name).toBe("equipment_asset")
+
+    // Directory's "equipment_asset" type must have the richer fields
+    const assetType = schema.getType("equipment_asset") as any
+    expect(assetType).toBeDefined()
+    const assetFields = assetType.getFields()
+    expect(assetFields["serialNumber"]).toBeDefined()
+    expect(assetFields["status"]).toBeDefined()
+
+    // The simpler "EquipmentAsset" type must still exist but lacks serialNumber
+    const simpleType = schema.getType("EquipmentAsset") as any
+    expect(simpleType).toBeDefined()
+    expect(simpleType.getFields()["serialNumber"]).toBeUndefined()
+  })
+
+  it("should wire return type and arguments for field: resolver: Class fields", () => {
+    // Reproduces the SupportTicketDomain.paginatedTickets scenario:
+    //   field :paginated_tickets, resolver: ::Support::Graphql::PaginatedTicketsQuery
+    // Without this fix the field gets type _Unknown_PaginatedTicketsQuery and no args.
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        SUPPORT_PAGINATED_RESULT_TYPE_FIXTURE,
+        "support/paginated_tickets_result_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        SUPPORT_TICKET_TYPE_FIXTURE,
+        "support/ticket_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        SUPPORT_DOMAIN_TYPE_FIXTURE,
+        "support/domain_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const resolvers = [
+      parseResolverDefinition(
+        PAGINATED_TICKETS_QUERY_FIXTURE,
+        "support/paginated_tickets_query.rb"
+      )!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs, resolvers)
+
+    const domainType = schema.getType("SupportTicketDomain") as any
+    expect(domainType).toBeDefined()
+    const domainFields = domainType.getFields()
+
+    const paginatedField = domainFields["paginatedTickets"]
+    expect(paginatedField).toBeDefined()
+
+    // Return type must be PaginatedTicketsResult (from the resolver declaration)
+    let returnType: any = paginatedField.type
+    while (returnType.ofType) returnType = returnType.ofType
+    expect(returnType.name).toBe("PaginatedTicketsResult")
+
+    // Arguments from PaginatedTicketsQuery must be exposed on the field
+    const argNames: string[] = paginatedField.args.map((a: any) => a.name)
+    expect(argNames).toContain("search")
+    expect(argNames).toContain("page")
+    expect(argNames).toContain("perPage")
+
+    // PaginatedTicketsResult type must have its own fields
+    const resultType = schema.getType("PaginatedTicketsResult") as any
+    expect(resultType).toBeDefined()
+    const resultFields = resultType.getFields()
+    expect(resultFields["totalCount"]).toBeDefined()
+    expect(resultFields["tickets"]).toBeDefined()
+  })
+
+  it("should respect camelize: false on field declarations", () => {
+    // When a field declares camelize: false, its name should not be camelCased.
+    // Example: field :new_appts_plan, String, camelize: false → "new_appts_plan" (not "newApptsPlan")
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        APPOINTMENT_TYPE_FIXTURE,
+        "scheduling/appointment_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+
+    const appointmentType = schema.getType("Appointment") as any
+    expect(appointmentType).toBeDefined()
+    const appointmentFields = appointmentType.getFields()
+
+    // Fields with camelize: false should keep their snake_case names
+    expect(appointmentFields["new_appts_plan"]).toBeDefined()
+    expect(appointmentFields["status_code"]).toBeDefined()
+
+    // Fields without camelize: false should be camelCased
+    expect(appointmentFields["visitTime"]).toBeDefined()
+
+    // The incorrectly camelCased versions should NOT exist
+    expect(appointmentFields["newApptsPlan"]).toBeUndefined()
+    expect(appointmentFields["statusCode"]).toBeUndefined()
   })
 })
 
@@ -1769,6 +2460,7 @@ describe("parseResolverDefinition", () => {
     )!
     expect(resolver.returnType).toBe("Int")
     expect(resolver.returnTypeIsList).toBe(false)
+    expect(resolver.isConnectionType).toBe(false)
     expect(resolver.returnTypeNullable).toBe(false)
   })
 
@@ -1782,6 +2474,7 @@ describe("parseResolverDefinition", () => {
     )
     expect(resolver.returnType).toBe("PurchaseOrder")
     expect(resolver.returnTypeIsList).toBe(true)
+    expect(resolver.isConnectionType).toBe(false)
 
     const projectIdArg = resolver.arguments.find(a => a.name === "projectId")
     expect(projectIdArg).toBeDefined()
@@ -1827,6 +2520,19 @@ describe("parseResolverDefinition", () => {
   it("should return null for files without a class definition", () => {
     const resolver = parseResolverDefinition("module Foo; end", "foo.rb")
     expect(resolver).toBeNull()
+  })
+
+  it("should parse .connection_type syntax and set isConnectionType flag", () => {
+    const resolver = parseResolverDefinition(
+      TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE,
+      "time_off_balance_query.rb"
+    )!
+    expect(resolver).not.toBeNull()
+    expect(resolver.returnType).toBe("TimeOffBalance")
+    expect(resolver.returnTypeIsList).toBe(false)
+    expect(resolver.isConnectionType).toBe(true)
+    expect(resolver.returnTypeNullable).toBe(false)
+    expect(resolver.arguments.length).toBe(2)
   })
 })
 

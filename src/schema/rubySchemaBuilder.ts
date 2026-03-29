@@ -39,11 +39,24 @@ export interface FieldDefinition {
   fieldArgs?: ArgumentDefinition[]
   /** Field description for context */
   description?: string
+  /** Full Ruby path of the field type, e.g. "Directory::Graphql::EquipmentAssetType".
+   * Preserved so the schema builder can use rubyPathMap to disambiguate when two
+   * namespaces define a type with the same classBasedName. */
+  typeRubyPath?: string
+  /** When a field uses `field :name, resolver: Class`, the resolver class name.
+   * The schema builder wires up the return type and arguments from that resolver. */
+  resolverClassName?: string
+  /** When true (or omitted), field name is camelCased. When false, kept as-is.
+   * E.g. `field :new_appts_plan, String, camelize: false` → "new_appts_plan" instead of "newApptsPlan" */
+  camelize?: boolean
 }
 
 export interface ArgumentDefinition {
   name: string
   type: string
+  /** Full Ruby path of the argument type, e.g. "BrandHeadlines::Graphql::CalendarEventInput".
+   * Preserved when the argument declares a namespaced type, for unambiguous resolution. */
+  typeRubyPath?: string
   required: boolean
   isList: boolean
   defaultValue?: string
@@ -52,7 +65,12 @@ export interface ArgumentDefinition {
 export interface ResolverDefinition {
   className: string
   returnType: string
+  /** Full Ruby path of the return type, e.g. "BrandHeadlines::Graphql::CalendarEventType".
+   * Preserved when the resolver declares a namespaced type, for unambiguous resolution. */
+  returnTypeRubyPath?: string
   returnTypeIsList: boolean
+  /** True only when the resolver uses `Type.connection_type` syntax — triggers Relay Connection wrapping */
+  isConnectionType: boolean
   returnTypeNullable: boolean
   arguments: ArgumentDefinition[]
   fileName: string
@@ -82,6 +100,9 @@ export interface GraphQLTypeDefinition {
   fileName: string
   /** Type description */
   description?: string
+  /** Full Ruby class path including modules, e.g. "BrandHeadlines::Graphql::CalendarEventType".
+   * Used to disambiguate types with the same classBasedName in different namespaces. */
+  rubyPath?: string
 }
 
 // ── File Discovery ─────────────────────────────────────────────────────────────
@@ -262,6 +283,16 @@ export function parseRubyTypeDefinition(
     const fields = parseFields(content, kind)
     const description = extractDescription(content)
 
+    // Build full Ruby path for namespace-aware disambiguation.
+    // Extract module declarations in order of appearance.
+    const rubyModules: string[] = []
+    const rubyModuleRegex = /module\s+(\w+)/g
+    let rubyModMatch: RegExpExecArray | null
+    while ((rubyModMatch = rubyModuleRegex.exec(content)) !== null) {
+      rubyModules.push(rubyModMatch[1])
+    }
+    const rubyPath = [...rubyModules, className].join("::")
+
     return {
       name,
       classBasedName,
@@ -272,6 +303,7 @@ export function parseRubyTypeDefinition(
       enumValues,
       fileName,
       description,
+      rubyPath,
     }
   }
 
@@ -437,7 +469,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
       })
     }
@@ -452,7 +484,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: false, // belongs_to is always singular
       })
@@ -468,7 +500,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_many is always a list
       })
@@ -484,7 +516,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: false, // has_one_attached is always singular
       })
@@ -500,7 +532,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_many_attached is always a list
       })
@@ -516,7 +548,7 @@ function parseFields(
     const parsed = parseFieldRest(rest)
     if (parsed) {
       fields.push({
-        name: snakeToCamel(fieldName),
+        name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_and_belongs_to_many is always a list
       })
@@ -580,6 +612,12 @@ interface ParsedFieldRest {
   isList: boolean
   access: AccessLevel
   description?: string
+  /** Full Ruby path of the field type for namespace disambiguation */
+  typeRubyPath?: string
+  /** Resolver class name for `field :name, resolver: Class` syntax */
+  resolverClassName?: string
+  /** Whether the field name should be camelCased (default: true) */
+  camelize?: boolean
 }
 
 /**
@@ -587,6 +625,20 @@ interface ParsedFieldRest {
  * e.g. "String, null: false, access: :public"
  */
 function parseFieldRest(rest: string): ParsedFieldRest | null {
+  // Detect `field :name, resolver: Class` pattern.
+  // When a field delegates to a standalone resolver class, store the class name
+  // so the schema builder can wire up its return type and arguments at build time.
+  const resolverMatch = rest.match(/\bresolver:\s+([\w:]+)/)
+  if (resolverMatch) {
+    return {
+      type: "String", // placeholder; actual return type resolved at schema-build time
+      nullable: true,
+      isList: false,
+      access: parseAccessLevel(rest),
+      resolverClassName: resolverMatch[1].replace(/^::/, ""),
+    }
+  }
+
   // Extract the type — first non-option argument
   // Types look like: String, ID, Boolean, Integer, Float, [SomeType], ::Module::Type
   const isList = rest.trim().startsWith("[")
@@ -603,6 +655,14 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
     const parts = rest.split(",")
     typePart = parts[0].trim()
   }
+
+  // Preserve the full Ruby path before normalising — used at schema-build time
+  // to look up the exact graphql_name in rubyPathMap when two namespaces define
+  // a class with the same short name (e.g. Directory::EquipmentAssetType vs
+  // EquipmentAssets::EquipmentAssetType both normalise to "EquipmentAsset").
+  const typeRubyPath = typePart.includes("::")
+    ? typePart.replace(/^::/, "").trim()
+    : undefined
 
   // Clean up type — remove Ruby namespacing
   const type = normalizeRubyType(typePart)
@@ -621,7 +681,11 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
   const descriptionMatch = rest.match(/description:\s*["']([^"']+)["']/)
   const description = descriptionMatch ? descriptionMatch[1] : undefined
 
-  return { type, nullable, isList, access, description }
+  // Parse camelize: option (default is true — field names are camelCased unless explicitly disabled)
+  const camelizeMatch = rest.match(/camelize:\s*(true|false)/)
+  const camelize = camelizeMatch ? camelizeMatch[1] === "true" : true
+
+  return { type, nullable, isList, access, description, typeRubyPath, camelize }
 }
 
 /**
@@ -742,9 +806,15 @@ export function parseResolverDefinition(
   }
   const fullClassName = [...modules, className].join("::")
 
-  // Parse return type: `type SomeType, null: false` or `type [SomeType], null: false`
-  const typeMatch = content.match(/^\s*type\s+(\[?[:\w]+\]?)\s*,?\s*(.*?)$/m)
+  // Parse return type. Supports three forms:
+  //   type [SomeType], null: false           → list (connection)
+  //   type SomeType.connection_type, null: false  → explicit connection
+  //   type SomeType, null: false             → single object
+  const typeMatch = content.match(
+    /^\s*type\s+(\[?[:\w]+\]?(?:\.connection_type)?)\s*,?\s*(.*?)$/m
+  )
   let returnType = "String"
+  let returnTypeRubyPath: string | undefined
   let returnTypeIsList = false
   let returnTypeNullable = true
 
@@ -752,9 +822,21 @@ export function parseResolverDefinition(
     const rawType = typeMatch[1].trim()
     const typeOpts = typeMatch[2] || ""
 
+    const isConnectionType = rawType.endsWith(".connection_type")
     returnTypeIsList = rawType.startsWith("[")
-    const typeStr = rawType.replace(/^\[|\]$/g, "").trim()
+
+    // Strip brackets and .connection_type suffix to get the base type name
+    const typeStr = rawType
+      .replace(/^\.connection_type$/, "")
+      .replace(/\.connection_type$/, "")
+      .replace(/^\[|\]$/g, "")
+      .trim()
     returnType = normalizeRubyType(typeStr) || "String"
+
+    // Preserve the full Ruby path for namespace-aware resolution in the schema builder
+    if (typeStr.includes("::")) {
+      returnTypeRubyPath = typeStr.replace(/^::/, "")
+    }
 
     const nullMatch = typeOpts.match(/null:\s*(true|false)/)
     returnTypeNullable = nullMatch ? nullMatch[1] === "true" : true
@@ -766,10 +848,16 @@ export function parseResolverDefinition(
   // Extract description
   const description = extractDescription(content)
 
+  const isConnectionType = typeMatch
+    ? typeMatch[1].trim().endsWith(".connection_type")
+    : false
+
   return {
     className: fullClassName,
     returnType,
+    returnTypeRubyPath,
     returnTypeIsList,
+    isConnectionType,
     returnTypeNullable,
     arguments: args,
     fileName,
@@ -815,6 +903,7 @@ export function parseArguments(content: string): ArgumentDefinition[] {
 
 interface ParsedArgumentRest {
   type: string
+  typeRubyPath?: string
   required: boolean
   isList: boolean
   defaultValue?: string
@@ -858,6 +947,11 @@ function parseArgumentRest(rest: string): ParsedArgumentRest | null {
     return null
   }
 
+  // Preserve the full Ruby path for namespace-aware resolution in the schema builder
+  const typeRubyPath = typePart.includes("::")
+    ? typePart.replace(/^::/, "")
+    : undefined
+
   // Parse required option — default is true for arguments
   // Use the original `rest` string for regex matching since it has newlines
   const requiredMatch = rest.match(/required:\s*(true|false)/)
@@ -870,7 +964,13 @@ function parseArgumentRest(rest: string): ParsedArgumentRest | null {
   // If there's a default_value, the argument is effectively optional
   const effectiveRequired = defaultValue !== undefined ? false : required
 
-  return { type, required: effectiveRequired, isList, defaultValue }
+  return {
+    type,
+    typeRubyPath,
+    required: effectiveRequired,
+    isList,
+    defaultValue,
+  }
 }
 
 /**
@@ -1107,6 +1207,20 @@ const ACTIVE_STORAGE_UPLOAD_SCALAR = new GraphQLScalarType({
   name: "ActiveStorageUpload",
 })
 
+/**
+ * Standard Relay PageInfo type — provided automatically by graphql-ruby for all
+ * connection fields.  Defined at module level so a single instance is reused.
+ */
+const PAGE_INFO_TYPE = new GraphQLObjectType({
+  name: "PageInfo",
+  fields: {
+    hasNextPage: { type: new GraphQLNonNull(GraphQLBoolean) },
+    hasPreviousPage: { type: new GraphQLNonNull(GraphQLBoolean) },
+    startCursor: { type: GraphQLString },
+    endCursor: { type: GraphQLString },
+  },
+})
+
 const BUILTIN_SCALARS: Record<string, GraphQLScalarType> = {
   String: GraphQLString,
   Int: GraphQLInt,
@@ -1147,6 +1261,18 @@ export function buildGraphQLSchema(
     }
   }
 
+  // Ruby path map: full Ruby class path → graphql_name.
+  // Enables unambiguous resolution when multiple types share the same
+  // classBasedName but live in different namespaces (e.g.
+  // Spaces::Graphql::CalendarEventType (graphql_name "CalendarEvent") vs
+  // BrandHeadlines::Graphql::CalendarEventType (graphql_name "BrandHeadlinesCalendarEvent")).
+  const rubyPathMap = new Map<string, string>()
+  for (const td of typeDefs) {
+    if (td.rubyPath) {
+      rubyPathMap.set(td.rubyPath, td.name)
+    }
+  }
+
   // Build resolver lookup by full class name
   const resolverMap = new Map<string, ResolverDefinition>()
   for (const r of resolvers) {
@@ -1162,6 +1288,84 @@ export function buildGraphQLSchema(
   // Register built-in scalars
   for (const [name, scalar] of Object.entries(BUILTIN_SCALARS)) {
     registry.set(name, scalar)
+  }
+
+  // Register the built-in Relay PageInfo type only if no Ruby file has already
+  // defined a type with that name (to avoid conflicts with custom PageInfo types).
+  if (!registry.has("PageInfo")) {
+    registry.set("PageInfo", PAGE_INFO_TYPE)
+  }
+
+  // Cache for synthetic connection types so each base type gets one instance.
+  const connectionTypeCache = new Map<string, GraphQLObjectType>()
+
+  /**
+   * Get or build a Relay Connection type for the given base type name.
+   * graphql-ruby wraps all list-returning fields in a Connection type automatically
+   * (via `connection_type_class NitroGraphql::Types::BaseConnection`), giving them:
+   *   - `nodes: [BaseType]`
+   *   - `edges: [BaseTypeEdge]` (each with `node` and `cursor`)
+   *   - `pageInfo: PageInfo!`
+   *   - `totalEntries: Int!`
+   * And the field itself gets implicit `first`, `last`, `before`, `after` args.
+   */
+  function getOrBuildConnectionType(baseTypeName: string): GraphQLObjectType {
+    if (connectionTypeCache.has(baseTypeName)) {
+      return connectionTypeCache.get(baseTypeName)!
+    }
+
+    // Resolve the base type; fall back to a permissive object if unknown.
+    const resolved = getOrBuildType(baseTypeName) as GraphQLOutputType | null
+    const fallbackName = `_Unknown_${baseTypeName.replace(/\W/g, "_")}`
+    const baseType: GraphQLOutputType =
+      resolved ??
+      (fallbackTypeCache.get(fallbackName) ||
+        (() => {
+          const fb = new GraphQLObjectType({
+            name: fallbackName,
+            fields: () => ({ placeholder: { type: GraphQLString } }),
+          })
+          fallbackTypeCache.set(fallbackName, fb)
+          return fb
+        })())
+
+    // Use the resolved type's canonical name for naming the Connection/Edge types
+    // so that aliases are reflected (e.g. "AgentStats" → "WarrantyAgentStats")
+    const canonicalName = (baseType as any).name ?? baseTypeName
+
+    // Recheck cache using canonical name to avoid creating duplicates
+    if (connectionTypeCache.has(canonicalName)) {
+      connectionTypeCache.set(
+        baseTypeName,
+        connectionTypeCache.get(canonicalName)!
+      )
+      return connectionTypeCache.get(canonicalName)!
+    }
+
+    const pageInfoType = (registry.get("PageInfo") ??
+      PAGE_INFO_TYPE) as GraphQLObjectType
+
+    const edgeType = new GraphQLObjectType({
+      name: `${canonicalName}Edge`,
+      fields: {
+        node: { type: baseType },
+        cursor: { type: new GraphQLNonNull(GraphQLString) },
+      },
+    })
+
+    const connectionType = new GraphQLObjectType({
+      name: `${canonicalName}Connection`,
+      fields: {
+        nodes: { type: new GraphQLList(baseType) },
+        edges: { type: new GraphQLList(edgeType) },
+        pageInfo: { type: new GraphQLNonNull(pageInfoType) },
+        totalEntries: { type: new GraphQLNonNull(GraphQLInt) },
+      },
+    })
+
+    connectionTypeCache.set(baseTypeName, connectionType)
+    connectionTypeCache.set(canonicalName, connectionType)
+    return connectionType
   }
 
   function resolveOutputType(
@@ -1335,6 +1539,79 @@ export function buildGraphQLSchema(
     return [...collectInheritedFields(parentDef, visited), ...parentDef.fields]
   }
 
+  /**
+   * Build a GraphQL field config for a single FieldDefinition, handling:
+   *
+   * 1. `field :name, resolver: Class` — looks up the resolver in resolverMap,
+   *    uses its return type (with rubyPathMap disambiguation) and argument list.
+   * 2. Namespace-disambiguated field types — when the field was declared with
+   *    a fully-qualified Ruby path (typeRubyPath), resolves it through rubyPathMap
+   *    to get the correct graphql_name instead of normalizeRubyType's short form.
+   * 3. Normal fields — straightforward type + nullable + fieldArgs resolution.
+   */
+  function buildFieldConfig(field: FieldDefinition): {
+    type: GraphQLOutputType
+    description?: string
+    args?: GraphQLFieldConfigArgumentMap
+  } {
+    // resolver: Class — look up the resolver and use its return type / arguments
+    if (field.resolverClassName) {
+      const resolver = findResolver(field.resolverClassName)
+      if (resolver) {
+        const resolvedReturnTypeName =
+          resolver.returnTypeRubyPath &&
+          rubyPathMap.has(resolver.returnTypeRubyPath)
+            ? rubyPathMap.get(resolver.returnTypeRubyPath)!
+            : resolver.returnType
+        let fieldType: GraphQLOutputType
+        if (resolver.isConnectionType) {
+          const connType = getOrBuildConnectionType(resolvedReturnTypeName)
+          fieldType = resolver.returnTypeNullable
+            ? connType
+            : new GraphQLNonNull(connType)
+        } else {
+          fieldType = resolveOutputType(
+            resolvedReturnTypeName,
+            resolver.returnTypeIsList,
+            resolver.returnTypeNullable
+          )
+        }
+        const result: any = { type: fieldType }
+        if (resolver.description) result.description = resolver.description
+        const resolverArgs = buildFieldArgs(resolver.arguments)
+        if (Object.keys(resolverArgs).length > 0) result.args = resolverArgs
+        return result
+      }
+      // Resolver class not found — use permissive fallback object type so
+      // selection sets on the field don't produce false "has no subfields" errors.
+      const fallbackName = `_Unknown_${field.resolverClassName.replace(/\W/g, "_")}`
+      if (!fallbackTypeCache.has(fallbackName)) {
+        fallbackTypeCache.set(
+          fallbackName,
+          new GraphQLObjectType({
+            name: fallbackName,
+            fields: { __typename: { type: GraphQLString } },
+          })
+        )
+      }
+      return { type: fallbackTypeCache.get(fallbackName)! }
+    }
+
+    // Use rubyPathMap when the field type was declared with a fully-qualified path
+    const resolvedTypeName =
+      field.typeRubyPath && rubyPathMap.has(field.typeRubyPath)
+        ? rubyPathMap.get(field.typeRubyPath)!
+        : field.type
+    const fc: any = {
+      type: resolveOutputType(resolvedTypeName, field.isList, !field.nullable),
+    }
+    if (field.description) fc.description = field.description
+    if (field.fieldArgs && field.fieldArgs.length > 0) {
+      fc.args = buildFieldArgs(field.fieldArgs)
+    }
+    return fc
+  }
+
   function buildObjectType(def: GraphQLTypeDefinition): GraphQLObjectType {
     const obj = new GraphQLObjectType({
       name: def.name,
@@ -1343,29 +1620,11 @@ export function buildGraphQLSchema(
         const fieldConfig: GraphQLFieldConfigMap<any, any> = {}
         // Inherited fields from parent chain (applied first so child fields override)
         for (const field of collectInheritedFields(def)) {
-          const fc: any = {
-            type: resolveOutputType(field.type, field.isList, !field.nullable),
-          }
-          if (field.description) {
-            fc.description = field.description
-          }
-          if (field.fieldArgs && field.fieldArgs.length > 0) {
-            fc.args = buildFieldArgs(field.fieldArgs)
-          }
-          fieldConfig[field.name] = fc
+          fieldConfig[field.name] = buildFieldConfig(field)
         }
         // Own fields (override any inherited with same name)
         for (const field of def.fields) {
-          const fc: any = {
-            type: resolveOutputType(field.type, field.isList, !field.nullable),
-          }
-          if (field.description) {
-            fc.description = field.description
-          }
-          if (field.fieldArgs && field.fieldArgs.length > 0) {
-            fc.args = buildFieldArgs(field.fieldArgs)
-          }
-          fieldConfig[field.name] = fc
+          fieldConfig[field.name] = buildFieldConfig(field)
         }
         // Merge any interface fields not already provided, so that GraphQL
         // interface-conformance validation passes even when the Ruby code relies
@@ -1441,16 +1700,7 @@ export function buildGraphQLSchema(
       fields: () => {
         const fieldConfig: GraphQLFieldConfigMap<any, any> = {}
         for (const field of def.fields) {
-          const fc: any = {
-            type: resolveOutputType(field.type, field.isList, !field.nullable),
-          }
-          if (field.description) {
-            fc.description = field.description
-          }
-          if (field.fieldArgs && field.fieldArgs.length > 0) {
-            fc.args = buildFieldArgs(field.fieldArgs)
-          }
-          fieldConfig[field.name] = fc
+          fieldConfig[field.name] = buildFieldConfig(field)
         }
         if (Object.keys(fieldConfig).length === 0) {
           fieldConfig["placeholder"] = {
@@ -1568,7 +1818,14 @@ export function buildGraphQLSchema(
   ): GraphQLFieldConfigArgumentMap {
     const args: GraphQLFieldConfigArgumentMap = {}
     for (const argDef of argDefs) {
-      let argType = resolveInputType(argDef.type, argDef.isList, true)
+      // If the argument was declared with a fully-qualified Ruby path, use the
+      // rubyPathMap to resolve the exact graphql_name (avoids collisions when
+      // two namespaces define a class with the same short name).
+      const typeName =
+        argDef.typeRubyPath && rubyPathMap.has(argDef.typeRubyPath)
+          ? rubyPathMap.get(argDef.typeRubyPath)!
+          : argDef.type
+      let argType = resolveInputType(typeName, argDef.isList, true)
       if (argDef.required) {
         argType =
           argType instanceof GraphQLNonNull
@@ -1651,13 +1908,45 @@ export function buildGraphQLSchema(
       continue
     }
 
-    const returnType = resolveOutputType(
-      resolver.returnType,
-      resolver.returnTypeIsList,
-      resolver.returnTypeNullable
-    )
+    // graphql-ruby automatically wraps list-returning fields in a Relay
+    // Connection type (nodes/edges/pageInfo/totalEntries) and adds implicit
+    // first/last/before/after arguments.  Mirror that here.
+    // Only apply Connection wrapping when the resolver explicitly uses `.connection_type`
+    // syntax — plain list returns (`[Type]`) render as ordinary GraphQL lists.
+    let returnType: GraphQLOutputType
+    let args = buildFieldArgs(resolver.arguments)
 
-    const args = buildFieldArgs(resolver.arguments)
+    // If the resolver declared its return type with a fully-qualified Ruby path,
+    // resolve it through rubyPathMap to get the exact graphql_name (avoids
+    // collisions when two namespaces have a class with the same short name).
+    const resolvedReturnTypeName =
+      resolver.returnTypeRubyPath &&
+      rubyPathMap.has(resolver.returnTypeRubyPath)
+        ? rubyPathMap.get(resolver.returnTypeRubyPath)!
+        : resolver.returnType
+
+    if (resolver.isConnectionType) {
+      const connectionType = getOrBuildConnectionType(resolvedReturnTypeName)
+      returnType = resolver.returnTypeNullable
+        ? connectionType
+        : new GraphQLNonNull(connectionType)
+
+      // Add standard Relay connection arguments ahead of anything the resolver
+      // declared explicitly (resolver wins on collision).
+      const relayArgs: GraphQLFieldConfigArgumentMap = {
+        first: { type: GraphQLInt },
+        last: { type: GraphQLInt },
+        before: { type: GraphQLString },
+        after: { type: GraphQLString },
+      }
+      args = { ...relayArgs, ...args }
+    } else {
+      returnType = resolveOutputType(
+        resolvedReturnTypeName,
+        resolver.returnTypeIsList,
+        resolver.returnTypeNullable
+      )
+    }
 
     const fieldConfig: any = { type: returnType }
     if (resolver.description) {
