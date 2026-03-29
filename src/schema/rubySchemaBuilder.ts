@@ -641,15 +641,20 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
 
   // Extract the type — first non-option argument
   // Types look like: String, ID, Boolean, Integer, Float, [SomeType], ::Module::Type
+  // For arrays, may include inline options: [SomeType, { null: true }]
   const isList = rest.trim().startsWith("[")
 
   let typePart: string
   if (isList) {
-    const bracketMatch = rest.match(/^\s*\[([^\]]+)\]/)
+    // Use non-greedy matching (.+?) to stop at the FIRST closing bracket,
+    // not the last one. This prevents capturing options after the bracket.
+    const bracketMatch = rest.match(/^\s*\[(.+?)\]/)
     if (!bracketMatch) {
       return null
     }
-    typePart = bracketMatch[1].trim()
+    // Inside brackets, there may be a type followed by comma and inline options: Type, { null: true }
+    // We only care about the type part, so split on comma and take the first element
+    typePart = bracketMatch[1].split(",")[0].trim()
   } else {
     // Get everything up to the first comma or end
     const parts = rest.split(",")
@@ -670,19 +675,40 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
     return null
   }
 
-  // Parse null: option
-  const nullMatch = rest.match(/null:\s*(true|false)/)
+  // Extract the field-level options that come after the type definition.
+  // For list types like [Type, { null: true }], we want to ignore inline options { null: true }
+  // and only parse the field-level options that come after the bracket.
+  let optionsString = rest
+  if (isList) {
+    // Find the closing bracket and use everything after it
+    const closingBracketIdx = rest.indexOf("]")
+    if (closingBracketIdx !== -1) {
+      optionsString = rest.substring(closingBracketIdx + 1)
+    }
+  } else {
+    // For non-list types, skip past the type name to get to the options
+    // This is the part after the first comma, or we can just use rest which contains `, options...`
+    const firstCommaIdx = rest.indexOf(",")
+    if (firstCommaIdx !== -1) {
+      optionsString = rest.substring(firstCommaIdx)
+    }
+  }
+
+  // Parse null: option from field-level options only
+  const nullMatch = optionsString.match(/null:\s*(true|false)/)
   const nullable = nullMatch ? nullMatch[1] === "true" : true
 
   // Parse access: option
-  const access = parseAccessLevel(rest)
+  const access = parseAccessLevel(optionsString)
 
   // Extract description: option
-  const descriptionMatch = rest.match(/description:\s*["']([^"']+)["']/)
+  const descriptionMatch = optionsString.match(
+    /description:\s*["']([^"']+)["']/
+  )
   const description = descriptionMatch ? descriptionMatch[1] : undefined
 
   // Parse camelize: option (default is true — field names are camelCased unless explicitly disabled)
-  const camelizeMatch = rest.match(/camelize:\s*(true|false)/)
+  const camelizeMatch = optionsString.match(/camelize:\s*(true|false)/)
   const camelize = camelizeMatch ? camelizeMatch[1] === "true" : true
 
   return { type, nullable, isList, access, description, typeRubyPath, camelize }
@@ -697,6 +723,32 @@ function normalizeRubyType(rubyType: string): string | null {
   // Handle Ruby constant paths like ::LearningDojo::Graphql::CourseVersionType
   if (cleaned.includes("::")) {
     const parts = cleaned.split("::")
+
+    // Special handling for GraphQL gem's built-in scalars from graphql-ruby gem.
+    // GraphQL::Types::ISO8601DateTime, GraphQL::Types::ISO8601Date, etc. are
+    // provided by graphql-ruby and map to known GraphQL scalars.
+    if (parts[0] === "GraphQL" && parts[1] === "Types") {
+      const typeName = parts[parts.length - 1]
+
+      // Map graphql-ruby built-in types to GraphQL scalars
+      const graphqlTypeMap: Record<string, string> = {
+        ISO8601DateTime: "DateTime",
+        ISO8601Date: "Date",
+        ISO8601Time: "Time",
+        JSON: "Json",
+        BigInt: "BigInt",
+      }
+
+      if (graphqlTypeMap[typeName]) {
+        return graphqlTypeMap[typeName]
+      }
+
+      // If not in the map, still use the type name as-is in case it's a custom
+      // GraphQL type that happens to be under the GraphQL::Types namespace
+      return typeName
+    }
+
+    // For other namespaced types (custom user types), use the last part
     const last = parts[parts.length - 1]
     return deriveTypeName(last)
   }

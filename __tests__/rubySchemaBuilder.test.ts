@@ -546,6 +546,38 @@ module Scheduling
 end
 `
 
+// Test fixture for array types with inline options
+const PHONE_NUMBERS_TYPE_FIXTURE = `
+module Directory
+  module Graphql
+    class PhoneNumberType < NitroGraphql::Types::BaseObject
+      graphql_name "PhoneNumber"
+      description "A phone number"
+
+      field :extension, String
+      field :number, String, null: false
+    end
+  end
+end
+`
+
+// Type with a field using array syntax with inline options
+const EMPLOYEE_WITH_PHONE_NUMBERS_FIXTURE = `
+module Directory
+  module Graphql
+    class EmployeeType < NitroGraphql::Types::BaseObject
+      graphql_name "Employee"
+
+      field :id, ID, null: false
+      field :name, String, null: false
+      # This is the pattern that was breaking: [Type, { null: true }]
+      # The parser should extract just "PhoneNumberType" and ignore the inline options
+      field :phone_numbers, [NitroGraphql::CoreModels::PhoneNumberType, { null: true }], null: false
+    end
+  end
+end
+`
+
 const AGENT_STATS_TYPE_FIXTURE = `
 module Warranty
   module Graphql
@@ -973,6 +1005,25 @@ end
     // Wrong casing should NOT exist
     expect(def!.fields.find(f => f.name === "newApptsPlan")).toBeUndefined()
     expect(def!.fields.find(f => f.name === "visit_time")).toBeUndefined()
+  })
+
+  it("should parse array types with inline options correctly", () => {
+    // When an array type includes inline options like [Type, { null: true }],
+    // we should extract only the type name, not the options
+    const def = parseRubyTypeDefinition(
+      EMPLOYEE_WITH_PHONE_NUMBERS_FIXTURE,
+      "employee_type.rb"
+    )
+    expect(def).not.toBeNull()
+
+    const phoneNumbersField = def!.fields.find(f => f.name === "phoneNumbers")
+    expect(phoneNumbersField).toBeDefined()
+    // Type should be "PhoneNumber" (derived from PhoneNumberType after stripping inline options)
+    expect(phoneNumbersField!.type).toBe("PhoneNumber")
+    // Should be recognized as a list
+    expect(phoneNumbersField!.isList).toBe(true)
+    // Field-level null: false applies to the field itself (not nullable)
+    expect(phoneNumbersField!.nullable).toBe(false)
   })
 })
 
@@ -2035,6 +2086,49 @@ end
     // The incorrectly camelCased versions should NOT exist
     expect(appointmentFields["newApptsPlan"]).toBeUndefined()
     expect(appointmentFields["statusCode"]).toBeUndefined()
+  })
+
+  it("should handle array types with inline options in field declarations", () => {
+    // When a field uses array syntax with inline options like [Type, { null: true }],
+    // the parser should correctly extract just the type name, not include the options.
+    // Example: field :phone_numbers, [PhoneNumberType, { null: true }], null: false
+    // Should resolve type as PhoneNumber, not as _Unknown_PhoneNumberType____null__true__
+    const typeDefs = [
+      parseRubyTypeDefinition(
+        PHONE_NUMBERS_TYPE_FIXTURE,
+        "core/phone_number_type.rb"
+      )!,
+      parseRubyTypeDefinition(
+        EMPLOYEE_WITH_PHONE_NUMBERS_FIXTURE,
+        "core/employee_type.rb"
+      )!,
+      parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
+    ]
+    const schema = buildGraphQLSchema(typeDefs)
+
+    const employeeType = schema.getType("Employee") as any
+    expect(employeeType).toBeDefined()
+    const employeeFields = employeeType.getFields()
+
+    // Field should exist
+    const phoneNumbersField = employeeFields["phoneNumbers"]
+    expect(phoneNumbersField).toBeDefined()
+
+    // Unwrap list and non-null wrappers to get base type
+    let elementType: any = phoneNumbersField.type
+    while (elementType.ofType) {
+      elementType = elementType.ofType
+    }
+
+    // Base type should be PhoneNumber, not some unknown mangled type
+    expect(elementType.name).toBe("PhoneNumber")
+
+    // PhoneNumber type must be properly resolved with its fields
+    const phoneNumberType = schema.getType("PhoneNumber") as any
+    expect(phoneNumberType).toBeDefined()
+    const phoneNumberFields = phoneNumberType.getFields()
+    expect(phoneNumberFields["extension"]).toBeDefined()
+    expect(phoneNumberFields["number"]).toBeDefined()
   })
 })
 
