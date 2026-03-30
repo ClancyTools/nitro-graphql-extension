@@ -2,7 +2,7 @@
   "name": "nitro-graphql-validator",
   "displayName": "Nitro GraphQL Validator",
   "description": "Real-time GraphQL query/mutation validation for nitro-web's CoBRA architecture. Builds schema directly from Ruby GraphQL type definitions — no running Rails server required.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "ClancyTools",
   "icon": "nitro-graphql-logo.png",
   "engines": {
