@@ -9,51 +9,51 @@ import { buildSchema, GraphQLSchema } from "graphql"
 // A minimal but realistic schema for testing
 const TEST_SCHEMA_SDL = `
   type Query {
-    projectTask(id: ID!): ProjectTask
-    findServiceTask(projectId: ID!, productId: ID!): ServiceTask
+    circusAct(id: ID!): CircusAct
+    findTrapezeCrew(showId: ID!, propId: ID!): TrapezeCrew
     user(id: ID!): User
-    project(id: ID!): Project
-    timeOffBalance(bucket: String!, first: Int, after: String, search: JSON): TimeOffBalanceConnection
+    show(id: ID!): Show
+    breakCredit(bucket: String!, first: Int, after: String, search: JSON): BreakCreditConnection
   }
 
   scalar JSON
 
-  type ProjectTask {
+  type CircusAct {
     id: ID!
-    canBeEdited: Boolean
-    canChangeDuration: Boolean
-    estimatedCompletionAt: String
-    task: Task
-    scheduledDate: String
-    installer: Installer
-    product: Product
-    project: Project
+    canBeRescheduled: Boolean
+    canChangeTiming: Boolean
+    estimatedCurtainAt: String
+    routine: Routine
+    scheduledFor: String
+    rigger: Rigger
+    prop: Prop
+    show: Show
   }
 
-  type Task {
+  type Routine {
     id: ID!
     code: String
   }
 
-  type Installer {
+  type Rigger {
     id: ID!
-    crewName: String
+    troupeName: String
   }
 
-  type Product {
+  type Prop {
     id: ID!
     code: String
   }
 
-  type Project {
+  type Show {
     id: ID!
-    projectNumber: String
+    showNumber: String
     name: String
     status: String
-    tasks: [ProjectTask]
+    acts: [CircusAct]
   }
 
-  type ServiceTask {
+  type TrapezeCrew {
     id: ID!
   }
 
@@ -61,18 +61,18 @@ const TEST_SCHEMA_SDL = `
     id: ID!
     name: String
     email: String
-    goesBy: String
-    lastName: String
-    startedOn: String
+    stageName: String
+    familyName: String
+    joinedOn: String
     status: String
   }
 
-  type TimeOffBalanceConnection {
-    nodes: [TimeOffBalanceNode]
+  type BreakCreditConnection {
+    nodes: [BreakCreditNode]
     pageInfo: PageInfo
   }
 
-  type TimeOffBalanceNode {
+  type BreakCreditNode {
     user: User
     approved: Float
     used: Float
@@ -93,32 +93,32 @@ beforeAll(() => {
 
 describe("Query Validation", () => {
   describe("valid queries", () => {
-    it("should produce no errors for a valid projectTask query", () => {
+    it("should produce no errors for a valid circusAct query", () => {
       const source = `
 import gql from "graphql-tag"
-export const PROJECT_TASK = gql\`
-  query projectTask($projectTaskId: ID!) {
-    projectTask(id: $projectTaskId) {
+export const CIRCUS_ACT = gql\`
+  query circusAct($actId: ID!) {
+    circusAct(id: $actId) {
       id
-      canBeEdited
-      canChangeDuration
-      estimatedCompletionAt
-      task {
+      canBeRescheduled
+      canChangeTiming
+      estimatedCurtainAt
+      routine {
         id
         code
       }
-      scheduledDate
-      installer {
+      scheduledFor
+      rigger {
         id
-        crewName
+        troupeName
       }
-      product {
+      prop {
         id
         code
       }
-      project {
+      show {
         id
-        projectNumber
+        showNumber
       }
     }
   }
@@ -131,12 +131,12 @@ export const PROJECT_TASK = gql\`
       expect(result.errors).toHaveLength(0)
     })
 
-    it("should produce no errors for findServiceTask query", () => {
+    it("should produce no errors for findTrapezeCrew query", () => {
       const source = `
 import gql from "graphql-tag"
 export const Q = gql\`
-  query findServiceTask($projectId: ID!, $productId: ID!) {
-    findServiceTask(projectId: $projectId, productId: $productId) {
+  query findTrapezeCrew($showId: ID!, $propId: ID!) {
+    findTrapezeCrew(showId: $showId, propId: $propId) {
       id
     }
   }
@@ -173,7 +173,7 @@ export const Q = gql\`
 import gql from "graphql-tag"
 export const Q = gql\`
   query badQuery($id: ID!) {
-    projectTask(id: $id) {
+    circusAct(id: $id) {
       id
       nonExistentField
     }
@@ -191,7 +191,7 @@ export const Q = gql\`
 import gql from "graphql-tag"
 export const Q = gql\`
   query badQuery($id: ID!) {
-    projectTask(id: $id) {
+    circusAct(id: $id) {
       id
       nonExistentField
       alsoFake
@@ -210,7 +210,7 @@ export const Q = gql\`
 import gql from "graphql-tag"
 export const Q = gql\`
   query badTypeQuery {
-    projectTask(id: 123) {
+    circusAct(id: 123) {
       id
     }
   }
@@ -227,7 +227,7 @@ export const Q = gql\`
 import gql from "graphql-tag"
 export const Q = gql\`
   query badVarQuery($id: ID!) {
-    projectTask(id: $undefinedVar) {
+    circusAct(id: $undefinedVar) {
       id
     }
   }
@@ -277,8 +277,8 @@ export const QUERY_ONE = gql\`
 \`
 
 export const QUERY_TWO = gql\`
-  query getProject($projectId: ID!) {
-    project(id: $projectId) {
+  query getShow($showId: ID!) {
+    show(id: $showId) {
       id
       name
       status
@@ -332,7 +332,7 @@ export const INVALID = gql\`
 
 export const Q = gql\`
   query badQuery($id: ID!) {
-    projectTask(id: $id) {
+    circusAct(id: $id) {
       id
       nonExistentField
     }
@@ -344,6 +344,68 @@ export const Q = gql\`
       expect(result.errors.length).toBeGreaterThan(0)
       // The error should be on a line > 2 (the gql starts on line 2, 0-indexed)
       expect(result.errors[0].line).toBeGreaterThan(2)
+    })
+  })
+
+  describe("interpolated queries", () => {
+    it("should skip validation for queries that are entirely interpolated variables", () => {
+      const source = `
+import gql from "graphql-tag"
+
+const QUERY = gql\`
+  \${PROJECT_TASK}
+  \${Component.fragments.additionalFields}
+\`
+`
+      const templates = findGraphQLTemplates(source)
+      expect(templates).toHaveLength(1)
+
+      const result = validateTemplate(templates[0], schema)
+      // Should have no errors because interpolated queries are skipped
+      expect(result.errors).toHaveLength(0)
+    })
+
+    it("should skip validation for single imported fragment interpolation", () => {
+      const source = `
+import gql from "graphql-tag"
+import { PROJECT_TASK } from "./queries"
+
+export const COMPOSED_QUERY = gql\`
+  \${PROJECT_TASK}
+\`
+`
+      const templates = findGraphQLTemplates(source)
+      expect(templates).toHaveLength(1)
+
+      const result = validateTemplate(templates[0], schema)
+      // Should skip validation for interpolated-only queries
+      expect(result.errors).toHaveLength(0)
+    })
+
+    it("should validate mixed queries with some real GraphQL and interpolations", () => {
+      // This is a query with both real GraphQL and interpolations—should validate the real parts
+      const source = `
+import gql from "graphql-tag"
+import { FRAGMENT } from "./fragments"
+
+export const QUERY = gql\`
+  query getUser($id: ID!) {
+    user(id: $id) {
+      id
+      name
+      nonExistentField  # This should cause an error
+    }
+  }
+  \${FRAGMENT}
+\`
+`
+      const templates = findGraphQLTemplates(source)
+      expect(templates).toHaveLength(1)
+
+      const result = validateTemplate(templates[0], schema)
+      // Should validate the query part and find the nonExistentField error
+      expect(result.errors.length).toBeGreaterThan(0)
+      expect(result.errors[0].message).toContain("nonExistentField")
     })
   })
 })

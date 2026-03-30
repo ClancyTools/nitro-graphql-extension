@@ -147,6 +147,7 @@ export function repairQuery(query: string, atOffset: number): string {
 }
 
 /**
+/**
  * Determine the GraphQL composite type that owns the selection set at the
  * given cursor offset within the query text. Uses AST walking with TypeInfo
  * after repairing the query to ensure it is parseable.

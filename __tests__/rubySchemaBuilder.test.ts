@@ -17,6 +17,8 @@ import {
   snakeToCamel,
   parseMixinArguments,
   parseMixinRegistry,
+  detectDynamicFieldBlocks,
+  resolveDynamicFields,
   GraphQLTypeDefinition,
   ResolverDefinition,
   ResolverRegistration,
@@ -27,78 +29,78 @@ import {
 const COURSE_TYPE_FIXTURE = `
 # frozen_string_literal: true
 
-module LearningDojo
+module CircusAcademy
   module Graphql
-    class CourseType < NitroGraphql::Types::BaseObject
-      implements ::NitroAudiences::Graphql::AudienceInterface
+    class ActType < CircusApp::Types::BaseObject
+      implements ::Crowd::Graphql::CrowdInterface
 
-      graphql_name "LearningDojoCourse"
-      description "A course in the Learning Dojo"
+      graphql_name "CircusAcademyAct"
+      description "An act in the Circus Academy"
 
       field :id, ID, null: false
       field :title, String
       field :description, String
       field :show_assessment_answers, Boolean, null: false
-      field :prerequisite_id, Integer
-      field :versions, [::LearningDojo::Graphql::CourseVersionType], null: false
-      field :current_version, ::LearningDojo::Graphql::CourseVersionType, null: false
-      field :handouts, [::LearningDojo::Graphql::HandoutType]
+      field :predecessor_id, Integer
+      field :revisions, [::CircusAcademy::Graphql::ActRevisionType], null: false
+      field :current_revision, ::CircusAcademy::Graphql::ActRevisionType, null: false
+      field :playbills, [::CircusAcademy::Graphql::PlaybillType]
       field :tag_list, [String], null: false
       field :track_time, Boolean, null: false
 
-      belongs_to :instructor, ::Directory::Graphql::EmployeeType, null: false
-      belongs_to :category, ::LearningDojo::Graphql::CategoryType
-      has_one :certificate, ::LearningDojo::Graphql::CertificateType
-      has_one :featured_review, ::LearningDojo::Graphql::ReviewType, null: false
-      has_many :enrollments, [::LearningDojo::Graphql::EnrollmentType]
-      has_many :course_tags, [::LearningDojo::Graphql::CourseTagType], null: false
+      belongs_to :instructor, ::BigTop::Graphql::PerformerType, null: false
+      belongs_to :category, ::CircusAcademy::Graphql::GenreType
+      has_one :certificate, ::CircusAcademy::Graphql::AwardType
+      has_one :featured_review, ::CircusAcademy::Graphql::CritiqueType, null: false
+      has_many :enrollments, [::CircusAcademy::Graphql::TicketType]
+      has_many :act_tags, [::CircusAcademy::Graphql::ActTagType], null: false
     end
   end
 end
 `
 
 const ACCESS_TYPE_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class EmployeeType < NitroGraphql::Types::BaseObject
-      graphql_name "Employee"
+    class PerformerType < CircusApp::Types::BaseObject
+      graphql_name "Performer"
 
       field :name, String, null: false, access: :public
       field :id, ID, null: false, access: %i[private customer]
       field :email, String, access: :partner
-      field :salary, Float
-      field :department, String, null: false, access: [:private, :admin]
+      field :wages, Float
+      field :troupe, String, null: false, access: [:private, :admin]
     end
   end
 end
 `
 
 const QUERY_TYPE_FIXTURE = `
-module NitroGraphql
-  class QueryType < NitroGraphql::Types::BaseObject
+module CircusApp
+  class QueryType < CircusApp::Types::BaseObject
     graphql_name "Queries"
 
-    field :user, ::Directory::Graphql::EmployeeType, null: true
-    field :course, ::LearningDojo::Graphql::CourseType, null: true
-    field :countries, [::Shared::Graphql::CountryType], null: false
+    field :performer, ::BigTop::Graphql::PerformerType, null: true
+    field :act, ::CircusAcademy::Graphql::ActType, null: true
+    field :tents, [::Midway::Graphql::TentType], null: false
   end
 end
 `
 
 const MUTATION_TYPE_FIXTURE = `
-module NitroGraphql
-  class MutationType < NitroGraphql::Types::BaseObject
+module CircusApp
+  class MutationType < CircusApp::Types::BaseObject
     graphql_name "Mutations"
 
-    field :update_user, ::Directory::Graphql::EmployeeType, null: true
+    field :update_performer, ::BigTop::Graphql::PerformerType, null: true
   end
 end
 `
 
 const ENUM_TYPE_FIXTURE = `
-module Shared
+module Midway
   module Graphql
-    class StatusEnum < NitroGraphql::Types::BaseEnum
+    class StatusEnum < CircusApp::Types::BaseEnum
       graphql_name "StatusEnum"
 
       value "ACTIVE"
@@ -110,10 +112,10 @@ end
 `
 
 const INPUT_TYPE_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class EmployeeInputType < NitroGraphql::Types::BaseInputObject
-      graphql_name "EmployeeInput"
+    class PerformerInputType < CircusApp::Types::BaseInputObject
+      graphql_name "PerformerInput"
 
       argument :name, String, required: true
       field :email, String
@@ -123,10 +125,10 @@ end
 `
 
 const INTERFACE_TYPE_FIXTURE = `
-module NitroAudiences
+module Crowd
   module Graphql
-    class AudienceInterface < NitroGraphql::Types::BaseInterface
-      graphql_name "AudienceInterface"
+    class CrowdInterface < CircusApp::Types::BaseInterface
+      graphql_name "CrowdInterface"
 
       field :id, ID, null: false
       field :name, String
@@ -136,10 +138,10 @@ end
 `
 
 const COUNTRY_TYPE_FIXTURE = `
-module Shared
+module Midway
   module Graphql
-    class CountryType < NitroGraphql::Types::BaseObject
-      graphql_name "Country"
+    class TentType < CircusApp::Types::BaseObject
+      graphql_name "Tent"
 
       field :abbr, String, null: false
       field :name, String, null: false
@@ -151,7 +153,7 @@ end
 const EMPTY_FIELDS_TYPE = `
 module Broken
   module Graphql
-    class EmptyType < NitroGraphql::Types::BaseObject
+    class EmptyType < CircusApp::Types::BaseObject
       graphql_name "BrokenEmpty"
     end
   end
@@ -161,18 +163,18 @@ end
 // ── Query/Mutation Resolver Fixtures ──────────────────────────────────────────
 
 const AGENT_STATS_QUERY_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class AgentStatsQuery < NitroGraphql::BaseQuery
-      description "Get a list of warranty agents using the provided IDs"
+    class ClownStatsQuery < CircusApp::BaseQuery
+      description "Get a list of high wire clowns using the provided IDs"
 
-      type [::Warranty::Graphql::AgentStatsType], null: false
+      type [::HighWire::Graphql::ClownStatsType], null: false
 
-      argument :agent_ids, [ID]
+      argument :clown_ids, [ID]
       argument :start_date, String, required: false
       argument :end_date, String, required: false
 
-      def resolve(agent_ids:, start_date: nil, end_date: nil)
+      def resolve(clown_ids:, start_date: nil, end_date: nil)
       end
     end
   end
@@ -180,18 +182,18 @@ end
 `
 
 const AGENT_STATS_CONNECTION_QUERY_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class AgentStatsQuery < NitroGraphql::BaseQuery
-      description "Get a list of warranty agents using the provided IDs"
+    class ClownStatsQuery < CircusApp::BaseQuery
+      description "Get a list of high wire clowns using the provided IDs"
 
-      type ::Warranty::Graphql::AgentStatsType.connection_type, null: false
+      type ::HighWire::Graphql::ClownStatsType.connection_type, null: false
 
-      argument :agent_ids, [ID]
+      argument :clown_ids, [ID]
       argument :start_date, String, required: false
       argument :end_date, String, required: false
 
-      def resolve(agent_ids:, start_date: nil, end_date: nil)
+      def resolve(clown_ids:, start_date: nil, end_date: nil)
       end
     end
   end
@@ -199,13 +201,13 @@ end
 `
 
 const AVAILABLE_ROUTES_QUERY_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class AvailableRoutesQuery < ::NitroGraphql::BaseQuery
+    class ShowRoutesQuery < ::CircusApp::BaseQuery
       description "Get available routes for a specific date"
 
-      type [::CoreModels::Graphql::InspectionRouteType], null: false
-      argument :date_range, [NitroGraphql::Types::Date]
+      type [::CircusCore::Graphql::CircusRouteType], null: false
+      argument :date_range, [CircusApp::Types::Date]
       argument :territory_id, ID
       argument :route_group, String, required: false, default_value: "service"
 
@@ -217,10 +219,10 @@ end
 `
 
 const COUNT_INCOMING_CALLS_QUERY_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class CountIncomingCallsQuery < ::NitroGraphql::BaseQuery
-      description "Get count of incoming calls for the day"
+    class CountGuestArrivalsQuery < ::CircusApp::BaseQuery
+      description "Get count of guest arrivals for the evening"
 
       type Int, null: false
 
@@ -235,18 +237,18 @@ end
 `
 
 const CREATE_SERVICE_ORDER_MUTATION_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class CreateServiceOrderMutation < NitroGraphql::BaseQuery
-      description "Create a service PO"
+    class BookShowEquipmentMutation < CircusApp::BaseQuery
+      description "Book a show equipment order"
 
-      type [::CoreModels::Graphql::PurchaseOrderType], null: false
+      type [::CircusCore::Graphql::PropOrderType], null: false
 
-      argument :project_id, ID
-      argument :ticket_number, String, required: false
-      argument :items, [Warranty::Graphql::ServiceOrderItemInputType]
+      argument :show_id, ID
+      argument :seat_number, String, required: false
+      argument :items, [HighWire::Graphql::ShowOrderItemInputType]
 
-      def resolve(project_id:, items:, ticket_number: nil)
+      def resolve(show_id:, items:, seat_number: nil)
       end
     end
   end
@@ -254,17 +256,17 @@ end
 `
 
 const CANCEL_SERVICE_APPOINTMENT_MUTATION_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class CancelServiceAppointmentMutation < NitroGraphql::BaseQuery
-      description "Cancel a service appointment"
+    class CancelShowBookingMutation < CircusApp::BaseQuery
+      description "Cancel a show booking"
 
-      type ::CoreModels::Graphql::ProjectTaskType, null: false
+      type ::CircusCore::Graphql::ShowTaskType, null: false
 
-      argument :service_quote_id, ID
-      argument :attributes, ::Warranty::Graphql::ServiceAppointmentInputType
+      argument :show_quote_id, ID
+      argument :attributes, ::HighWire::Graphql::ShowBookingInputType
 
-      def resolve(service_quote_id:, attributes:)
+      def resolve(show_quote_id:, attributes:)
       end
     end
   end
@@ -272,12 +274,12 @@ end
 `
 
 const DELETE_ADDITIONAL_SERVICE_MUTATION_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class DeleteAdditionalServiceMutation < NitroGraphql::BaseQuery
-      description "Delete an additional service for a warranty service appointment"
+    class RemoveExtraActMutation < CircusApp::BaseQuery
+      description "Remove an extra act from a show booking"
 
-      type ::Warranty::Graphql::ServiceAppointmentAdditionalServiceType, null: false
+      type ::HighWire::Graphql::ShowBookingExtraType, null: false
 
       argument :id, ID
 
@@ -289,25 +291,25 @@ end
 `
 
 const TIME_OFF_BALANCE_TYPE_FIXTURE = `
-module Attendance
+module CrewRoll
   module Graphql
-    class TimeOffBalanceType < NitroGraphql::Types::BaseObject
+    class BreakCreditType < CircusApp::Types::BaseObject
       field :hours, Float
-      field :balance_type, String
+      field :credit_type, String
     end
   end
 end
 `
 
 const TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE = `
-module Attendance
+module CrewRoll
   module Graphql
-    class TimeOffBalanceQuery < NitroGraphql::BaseQuery
-      description "Returns time off balance hours"
+    class BreakCreditQuery < CircusApp::BaseQuery
+      description "Returns break credit hours"
 
-      type ::Attendance::Graphql::TimeOffBalanceType.connection_type, null: false
+      type ::CrewRoll::Graphql::BreakCreditType.connection_type, null: false
       argument :bucket, String
-      argument :search, NitroGraphql::Types::Json, required: false
+      argument :search, CircusApp::Types::Json, required: false
 
       def resolve(bucket:, search: {})
       end
@@ -317,13 +319,13 @@ end
 `
 
 const SERVICE_APPOINTMENT_INPUT_TYPE_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class ServiceAppointmentInputType < NitroGraphql::Types::BaseInputObject
-      graphql_name "ServiceAppointmentInput"
+    class ShowBookingInputType < CircusApp::Types::BaseInputObject
+      graphql_name "ShowBookingInput"
 
-      argument :project_task_id, ID
-      argument :cant_service_reason, String, required: false
+      argument :show_task_id, ID
+      argument :cant_perform_reason, String, required: false
       argument :notes, String, required: false
     end
   end
@@ -331,16 +333,16 @@ end
 `
 
 const CALENDAR_EVENT_TYPE_FIXTURE = `
-module BrandHeadlines
+module Marquee
   module Graphql
-    class CalendarEventType < ::NitroGraphql::Types::BaseObject
-      graphql_name "BrandHeadlinesCalendarEvent"
+    class ShowEventType < ::CircusApp::Types::BaseObject
+      graphql_name "MarqueeShowEvent"
 
       field :id, ID, null: false
       field :title, String
       field :location, String
-      field :start_date, NitroGraphql::Types::DateTime
-      field :end_date, NitroGraphql::Types::DateTime
+      field :start_date, CircusApp::Types::DateTime
+      field :end_date, CircusApp::Types::DateTime
       field :details, String
     end
   end
@@ -348,16 +350,16 @@ end
 `
 
 const CALENDAR_EVENT_INPUT_FIXTURE = `
-module BrandHeadlines
+module Marquee
   module Graphql
-    class CalendarEventInput < NitroGraphql::Types::BaseInputObject
-      graphql_name "BrandHeadlinesCalendarEventInput"
+    class ShowEventInput < CircusApp::Types::BaseInputObject
+      graphql_name "MarqueeShowEventInput"
 
       argument :id, ID, required: false
       argument :title, String
       argument :location, String
-      argument :start_date, NitroGraphql::Types::DateTime
-      argument :end_date, NitroGraphql::Types::DateTime
+      argument :start_date, CircusApp::Types::DateTime
+      argument :end_date, CircusApp::Types::DateTime
       argument :details, String, required: false
     end
   end
@@ -366,10 +368,10 @@ end
 
 // A conflicting type in a different namespace with the same class name
 const SPACES_CALENDAR_EVENT_TYPE_FIXTURE = `
-module Spaces
+module TentSpace
   module Graphql
-    class CalendarEventType < NitroGraphql::Types::BaseObject
-      graphql_name "CalendarEvent"
+    class ShowEventType < CircusApp::Types::BaseObject
+      graphql_name "TentShowEvent"
 
       field :id, ID, null: false
       field :summary, String, null: false
@@ -381,10 +383,10 @@ end
 
 // A conflicting input type in a different namespace with the same class name
 const SPACES_CALENDAR_EVENT_INPUT_FIXTURE = `
-module Spaces
+module TentSpace
   module Graphql
-    class CalendarEventInput < NitroGraphql::Types::BaseInputObject
-      graphql_name "CalendarEventInput"
+    class ShowEventInput < CircusApp::Types::BaseInputObject
+      graphql_name "TentShowEventInput"
 
       argument :summary, String
       argument :description, String, required: false
@@ -394,22 +396,22 @@ end
 `
 
 const CREATE_OR_UPDATE_CALENDAR_EVENT_MUTATION_FIXTURE = `
-module BrandHeadlines
+module Marquee
   module Graphql
-    class CreateOrUpdateCalendarEventMutation < NitroGraphql::BaseQuery
-      description "Creates or updates a calendar event"
+    class CreateOrUpdateShowEventMutation < CircusApp::BaseQuery
+      description "Creates or updates a show event"
 
-      type ::BrandHeadlines::Graphql::CalendarEventType, null: false
-      argument :input, ::BrandHeadlines::Graphql::CalendarEventInput
+      type ::Marquee::Graphql::ShowEventType, null: false
+      argument :input, ::Marquee::Graphql::ShowEventInput
 
       def resolve(input:)
         input_hash = input.to_h
         if input_hash[:id].present?
-          calendar_event = ::BrandHeadlines::CalendarEvent.find(input_hash.delete(:id))
-          calendar_event.update!(input_hash)
-          calendar_event
+          show_event = ::Marquee::ShowEvent.find(input_hash.delete(:id))
+          show_event.update!(input_hash)
+          show_event
         else
-          ::BrandHeadlines::CalendarEvent.create!(input_hash)
+          ::Marquee::ShowEvent.create!(input_hash)
         end
       end
     end
@@ -417,19 +419,19 @@ module BrandHeadlines
 end
 `
 
-// ── EquipmentAsset disambiguation fixtures ─────────────────────────────────────
+// ── PropAsset disambiguation fixtures ─────────────────────────────────────────
 
-// Directory's richer version (graphql_name differs from normalized classBasedName)
+// BigTop's richer version (graphql_name differs from normalized classBasedName)
 const DIRECTORY_EQUIPMENT_ASSET_TYPE_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class EquipmentAssetType < NitroGraphql::Types::BaseObject
-      graphql_name "equipment_asset"
-      description "A piece of equipment assigned to a user"
+    class PropAssetType < CircusApp::Types::BaseObject
+      graphql_name "prop_item"
+      description "A prop assigned to a performer"
 
       field :id, ID, null: false
-      field :asset_number, String, null: false
-      field :serial_number, String
+      field :prop_number, String, null: false
+      field :prop_serial, String
       field :status, String
     end
   end
@@ -438,30 +440,30 @@ end
 
 // A separate, simpler type in a different namespace with the same class name
 const EQUIPMENT_ASSETS_EQUIPMENT_ASSET_TYPE_FIXTURE = `
-module EquipmentAssets
+module PropHouse
   module Graphql
-    class EquipmentAssetType < NitroGraphql::Types::BaseObject
-      graphql_name "EquipmentAsset"
-      description "Equipment Asset info"
+    class PropAssetType < CircusApp::Types::BaseObject
+      graphql_name "PropAsset"
+      description "Prop asset info"
 
       field :id, ID, null: false
-      field :type, String
-      field :asset_number, String, null: false
+      field :category, String
+      field :prop_number, String, null: false
     end
   end
 end
 `
 
-// Employee type referencing Directory's version via fully-qualified path
+// Performer type referencing BigTop's version via fully-qualified path
 const EMPLOYEE_WITH_EQUIPMENT_TYPE_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class EmployeeType < NitroGraphql::Types::BaseObject
-      graphql_name "Employee"
+    class PerformerType < CircusApp::Types::BaseObject
+      graphql_name "Performer"
 
       field :id, ID, null: false
       field :name, String, null: false
-      field :equipment_assets, [::Directory::Graphql::EquipmentAssetType]
+      field :prop_assets, [::BigTop::Graphql::PropAssetType]
     end
   end
 end
@@ -470,39 +472,39 @@ end
 // ── Nested resolver field fixtures ─────────────────────────────────────────────
 
 const SUPPORT_PAGINATED_RESULT_TYPE_FIXTURE = `
-module Support
+module Backstage
   module Graphql
-    class PaginatedTicketsResultType < NitroGraphql::Types::BaseObject
-      graphql_name "PaginatedTicketsResult"
+    class ShowSeatsResultType < CircusApp::Types::BaseObject
+      graphql_name "ShowSeatsResult"
 
       field :total_count, Int, null: false
-      field :tickets, [::Support::Graphql::TicketType]
+      field :seats, [::Backstage::Graphql::SeatType]
     end
   end
 end
 `
 
 const SUPPORT_TICKET_TYPE_FIXTURE = `
-module Support
+module Backstage
   module Graphql
-    class TicketType < NitroGraphql::Types::BaseObject
-      graphql_name "SupportTicket"
+    class SeatType < CircusApp::Types::BaseObject
+      graphql_name "BackstageSeat"
 
       field :id, ID, null: false
-      field :ticket_number, String, null: false
+      field :seat_number, String, null: false
     end
   end
 end
 `
 
 const PAGINATED_TICKETS_QUERY_FIXTURE = `
-module Support
+module Backstage
   module Graphql
-    class PaginatedTicketsQuery < NitroGraphql::BaseQuery
-      description "Returns paginated support tickets"
+    class ShowSeatsQuery < CircusApp::BaseQuery
+      description "Returns paginated show seats"
 
-      type ::Support::Graphql::PaginatedTicketsResultType, null: false
-      argument :search, NitroGraphql::Types::Json, required: false
+      type ::Backstage::Graphql::ShowSeatsResultType, null: false
+      argument :search, CircusApp::Types::Json, required: false
       argument :page, Int
       argument :per_page, Int
 
@@ -514,16 +516,16 @@ module Support
 end
 `
 
-// DomainType with a field backed by a resolver class
+// BigTopType with a field backed by a resolver class
 const SUPPORT_DOMAIN_TYPE_FIXTURE = `
-module Support
+module Backstage
   module Graphql
-    class DomainType < NitroGraphql::Types::BaseObject
-      graphql_name "SupportTicketDomain"
+    class StageHubType < CircusApp::Types::BaseObject
+      graphql_name "BackstageHub"
 
       field :id, ID, null: false
       field :name, String, null: false
-      field :paginated_tickets, resolver: ::Support::Graphql::PaginatedTicketsQuery
+      field :show_seats, resolver: ::Backstage::Graphql::ShowSeatsQuery
     end
   end
 end
@@ -531,18 +533,18 @@ end
 
 // Test fixture for camelize: false option
 const APPOINTMENT_TYPE_FIXTURE = `
-module Scheduling
+module ShowSchedule
   module Graphql
-    class AppointmentType < NitroGraphql::Types::BaseObject
-      graphql_name "Appointment"
-      description "A scheduled appointment"
+    class ShowSlotType < CircusApp::Types::BaseObject
+      graphql_name "ShowSlot"
+      description "A scheduled show slot"
 
       field :id, ID, null: false
       field :title, String, null: false
       # This field should NOT be camelCased because of camelize: false
-      field :new_appts_plan, String, camelize: false
+      field :new_acts_plan, String, camelize: false
       # This field should be camelCased normally
-      field :visit_time, String, null: false
+      field :show_time, String, null: false
       field :status_code, String, camelize: false
     end
   end
@@ -551,11 +553,11 @@ end
 
 // Test fixture for array types with inline options
 const PHONE_NUMBERS_TYPE_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class PhoneNumberType < NitroGraphql::Types::BaseObject
-      graphql_name "PhoneNumber"
-      description "A phone number"
+    class RingToneType < CircusApp::Types::BaseObject
+      graphql_name "RingTone"
+      description "A ring tone"
 
       field :extension, String
       field :number, String, null: false
@@ -566,79 +568,79 @@ end
 
 // Type with a field using array syntax with inline options
 const EMPLOYEE_WITH_PHONE_NUMBERS_FIXTURE = `
-module Directory
+module BigTop
   module Graphql
-    class EmployeeType < NitroGraphql::Types::BaseObject
-      graphql_name "Employee"
+    class PerformerType < CircusApp::Types::BaseObject
+      graphql_name "Performer"
 
       field :id, ID, null: false
       field :name, String, null: false
       # This is the pattern that was breaking: [Type, { null: true }]
-      # The parser should extract just "PhoneNumberType" and ignore the inline options
-      field :phone_numbers, [NitroGraphql::CoreModels::PhoneNumberType, { null: true }], null: false
+      # The parser should extract just "RingToneType" and ignore the inline options
+      field :ring_tones, [CircusApp::PropRegistry::RingToneType, { null: true }], null: false
     end
   end
 end
 `
 
 const AGENT_STATS_TYPE_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class AgentStatsType < NitroGraphql::Types::BaseObject
-      graphql_name "WarrantyAgentStats"
+    class ClownStatsType < CircusApp::Types::BaseObject
+      graphql_name "HighWireClownStats"
 
-      field :incoming_calls, Int
-      field :average_calls, Float
-      field :available_duration, Float
+      field :crowd_count, Int
+      field :avg_crowd, Float
+      field :idle_duration, Float
     end
   end
 end
 `
 
 const REGISTRATION_FILE_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    extend ::NitroGraphql::Schema::Partial
+    extend ::CircusApp::Schema::Partial
 
     queries do
-      field :agent_stats,
-            resolver: ::Warranty::Graphql::AgentStatsQuery,
-            access: { warranty_stats_dashboard: :view }
+      field :troupe_stats,
+            resolver: ::HighWire::Graphql::ClownStatsQuery,
+            access: { high_wire_stats_board: :view }
 
-      field :available_routes,
-            resolver: ::Warranty::Graphql::AvailableRoutesQuery,
-            access: { InspectionAppointment => :update }
+      field :show_routes,
+            resolver: ::HighWire::Graphql::ShowRoutesQuery,
+            access: { ShowSlot => :update }
 
-      field :count_incoming_calls,
-            resolver: ::Warranty::Graphql::CountIncomingCallsQuery,
-            access: { ::CustomerSupport::ServiceCall => :take }
+      field :count_guest_arrivals,
+            resolver: ::HighWire::Graphql::CountGuestArrivalsQuery,
+            access: { ::RingServices::GuestEntry => :take }
 
       field :access_before_resolver,
             access: :public,
-            resolver: ::Warranty::Graphql::AgentStatsQuery
+            resolver: ::HighWire::Graphql::ClownStatsQuery
     end
 
     mutations do
-      field :create_service_order,
-            resolver: ::Warranty::Graphql::CreateServiceOrderMutation,
-            access: { Project => :create_material_po }
+      field :book_show_equipment,
+            resolver: ::HighWire::Graphql::BookShowEquipmentMutation,
+            access: { Show => :create_prop_order }
 
-      field :cancel_service_appointment,
-            resolver: ::Warranty::Graphql::CancelServiceAppointmentMutation,
-            access: { ProjectTask => :service_work_queue }
+      field :cancel_show_booking,
+            resolver: ::HighWire::Graphql::CancelShowBookingMutation,
+            access: { ShowTask => :show_work_queue }
 
-      field :delete_additional_service,
-            resolver: ::Warranty::Graphql::DeleteAdditionalServiceMutation,
-            access: { ProjectTask => :service_work_queue }
+      field :remove_extra_act,
+            resolver: ::HighWire::Graphql::RemoveExtraActMutation,
+            access: { ShowTask => :show_work_queue }
     end
   end
 end
 `
 
 const PROPOSED_SERVICE_CHANGE_STATUS_ENUM_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class ProposedServiceChangeStatusEnum < NitroGraphql::Types::BaseEnum
+    class ActRevisionStatusEnum < CircusApp::Types::BaseEnum
       value "proposed"
       value "canceled"
       value "submitted"
@@ -648,9 +650,9 @@ end
 `
 
 const PAGINATION_TYPE_FIXTURE = `
-module NitroGraphql
+module CircusApp
   module Types
-    class PaginationType < NitroGraphql::Types::BaseObject
+    class PaginationType < CircusApp::Types::BaseObject
       field :current_page, Integer, null: false
       field :total_pages, Integer, null: false
       field :total_entries, Integer, null: false
@@ -660,10 +662,10 @@ end
 `
 
 const PHONE_NUMBER_TYPE_FIXTURE = `
-module NitroGraphql
-  module CoreModels
-    class PhoneNumberType < NitroGraphql::Types::BaseObject
-      graphql_name "PhoneNumber"
+module CircusApp
+  module PropRegistry
+    class RingToneType < CircusApp::Types::BaseObject
+      graphql_name "RingTone"
       field :id, ID, null: false
       field :number, String, null: false
       field :number_type, String, null: false
@@ -673,41 +675,41 @@ end
 `
 
 const PROJECT_TASK_TYPE_FIXTURE = `
-module CoreModels
+module CircusCore
   module Graphql
-    class ProjectTaskType < NitroGraphql::Types::BaseObject
-      graphql_name "ProjectTask"
+    class ShowTaskType < CircusApp::Types::BaseObject
+      graphql_name "ShowTask"
 
       field :id, ID, null: false
       field :scheduled_date, String
-      field :require_lead_safe_install, Boolean, null: false
-      belongs_to :project, ::CoreModels::Graphql::ProjectType
-      belongs_to :product, ::CoreModels::Graphql::ProductType
-      belongs_to :inspection_appointment, ::CoreModels::Graphql::AppointmentType
+      field :require_safety_check, Boolean, null: false
+      belongs_to :show, ::CircusCore::Graphql::ShowType
+      belongs_to :prop, ::CircusCore::Graphql::PropType
+      belongs_to :show_slot, ::CircusCore::Graphql::ShowSlotType
     end
   end
 end
 `
 
 const SERVICE_TASK_TYPE_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    class ServiceTaskType < CoreModels::Graphql::ProjectTaskType
-      graphql_name "WarantyServiceTask"
+    class RigTaskType < CircusCore::Graphql::ShowTaskType
+      graphql_name "HighWireRigTask"
 
-      field :warehouse, String
-      field :pulse_enabled_homeowner_ids, [ID]
-      field :active_service_quote, Warranty::Graphql::ServiceQuoteType
+      field :storage_tent, String
+      field :vip_holder_ids, [ID]
+      field :active_show_quote, HighWire::Graphql::ShowQuoteType
     end
   end
 end
 `
 
 const POINT_OF_INTEREST_INPUT_TYPE_FIXTURE = `
-module NitroGis
+module CircusMaps
   module Graphql
-    class PointOfInterestInputType < NitroGraphql::Types::BaseInputObject
-      graphql_name "PointOfInterestInput"
+    class RingMarkerInputType < CircusApp::Types::BaseInputObject
+      graphql_name "RingMarkerInput"
 
       argument :name, String, required: false
       argument :latitude, Float, required: true
@@ -718,13 +720,13 @@ end
 `
 
 const TERRITORY_ZONE_INPUT_TYPE_FIXTURE = `
-module TerritoryMaps
+module CircusMaps
   module Graphql
-    class TerritoryExpansionCollectionZoneInputType < ::NitroGis::Graphql::PointOfInterestInputType
-      graphql_name "TerritoryExpansionCollectionZoneInput"
+    class CircusTerritoryZoneInputType < ::CircusMaps::Graphql::RingMarkerInputType
+      graphql_name "CircusTerritoryZoneInput"
 
       argument :id, ID, required: false
-      argument :detail_name, String, required: false
+      argument :section_name, String, required: false
       argument :color, String, required: false
     end
   end
@@ -732,17 +734,17 @@ end
 `
 
 const MODULE_INTERFACE_FIXTURE = `
-module Warranty
+module HighWire
   module Graphql
-    module ServiceQuoteItemItemInterface
-      include NitroGraphql::Types::BaseInterface
+    module ShowItemInterface
+      include CircusApp::Types::BaseInterface
 
       field :id, ID, null: false
       field :model, String
       field :color, String
       field :serial_number, String
 
-      belongs_to :product, ::CoreModels::Graphql::ProductType, null: false
+      belongs_to :prop, ::CircusCore::Graphql::PropType, null: false
     end
   end
 end
@@ -754,7 +756,7 @@ describe("parseRubyTypeDefinition", () => {
   it("should parse a standard object type with graphql_name", () => {
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")
     expect(def).not.toBeNull()
-    expect(def!.name).toBe("LearningDojoCourse")
+    expect(def!.name).toBe("CircusAcademyAct")
     expect(def!.kind).toBe("object")
     expect(def!.fields.length).toBeGreaterThan(5)
   })
@@ -774,7 +776,7 @@ describe("parseRubyTypeDefinition", () => {
 
   it("should handle list types", () => {
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
-    const versionsField = def.fields.find(f => f.name === "versions")
+    const versionsField = def.fields.find(f => f.name === "revisions")
     expect(versionsField).toBeDefined()
     expect(versionsField!.isList).toBe(true)
     expect(versionsField!.nullable).toBe(false)
@@ -782,15 +784,15 @@ describe("parseRubyTypeDefinition", () => {
 
   it("should extract implements clauses", () => {
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
-    expect(def.implements).toContain("AudienceInterface")
+    expect(def.implements).toContain("CrowdInterface")
   })
 
   it("should parse a type with access levels", () => {
     const def = parseRubyTypeDefinition(
       ACCESS_TYPE_FIXTURE,
-      "employee_type.rb"
+      "performer_type.rb"
     )!
-    expect(def.name).toBe("Employee")
+    expect(def.name).toBe("Performer")
 
     const nameField = def.fields.find(f => f.name === "name")
     expect(nameField!.access).toEqual(["public"])
@@ -805,10 +807,10 @@ describe("parseRubyTypeDefinition", () => {
   it("should default access to private when not specified", () => {
     const def = parseRubyTypeDefinition(
       ACCESS_TYPE_FIXTURE,
-      "employee_type.rb"
+      "performer_type.rb"
     )!
-    const salaryField = def.fields.find(f => f.name === "salary")
-    expect(salaryField!.access).toEqual(["private"])
+    const wagesField = def.fields.find(f => f.name === "wages")
+    expect(wagesField!.access).toEqual(["private"])
   })
 
   it("should parse enum types", () => {
@@ -820,7 +822,7 @@ describe("parseRubyTypeDefinition", () => {
   it("should parse interface types", () => {
     const def = parseRubyTypeDefinition(
       INTERFACE_TYPE_FIXTURE,
-      "audience_interface.rb"
+      "crowd_interface.rb"
     )!
     expect(def.kind).toBe("interface")
     expect(def.fields.length).toBe(2)
@@ -871,13 +873,13 @@ end
 
   it("should resolve Ruby namespaced types to simple names", () => {
     const def = parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!
-    const userField = def.fields.find(f => f.name === "user")
-    expect(userField!.type).toBe("Employee")
+    const performerField = def.fields.find(f => f.name === "performer")
+    expect(performerField!.type).toBe("Performer")
   })
 
   it("should map Integer to Int", () => {
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
-    const prereqField = def.fields.find(f => f.name === "prerequisiteId")
+    const prereqField = def.fields.find(f => f.name === "predecessorId")
     expect(prereqField!.type).toBe("Int")
   })
 
@@ -885,13 +887,13 @@ end
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
     const instructorField = def.fields.find(f => f.name === "instructor")
     expect(instructorField).toBeDefined()
-    expect(instructorField!.type).toBe("Employee")
+    expect(instructorField!.type).toBe("Performer")
     expect(instructorField!.isList).toBe(false)
     expect(instructorField!.nullable).toBe(false)
 
     const categoryField = def.fields.find(f => f.name === "category")
     expect(categoryField).toBeDefined()
-    expect(categoryField!.type).toBe("Category")
+    expect(categoryField!.type).toBe("Genre")
     expect(categoryField!.isList).toBe(false)
     expect(categoryField!.nullable).toBe(true)
   })
@@ -900,13 +902,13 @@ end
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
     const certField = def.fields.find(f => f.name === "certificate")
     expect(certField).toBeDefined()
-    expect(certField!.type).toBe("Certificate")
+    expect(certField!.type).toBe("Award")
     expect(certField!.isList).toBe(false)
     expect(certField!.nullable).toBe(true)
 
     const reviewField = def.fields.find(f => f.name === "featuredReview")
     expect(reviewField).toBeDefined()
-    expect(reviewField!.type).toBe("Review")
+    expect(reviewField!.type).toBe("Critique")
     expect(reviewField!.isList).toBe(false)
     expect(reviewField!.nullable).toBe(false)
   })
@@ -915,42 +917,42 @@ end
     const def = parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course_type.rb")!
     const enrollmentsField = def.fields.find(f => f.name === "enrollments")
     expect(enrollmentsField).toBeDefined()
-    expect(enrollmentsField!.type).toBe("Enrollment")
+    expect(enrollmentsField!.type).toBe("Ticket")
     expect(enrollmentsField!.isList).toBe(true)
 
-    const courseTagsField = def.fields.find(f => f.name === "courseTags")
-    expect(courseTagsField).toBeDefined()
-    expect(courseTagsField!.type).toBe("CourseTag")
-    expect(courseTagsField!.isList).toBe(true)
+    const actTagsField = def.fields.find(f => f.name === "actTags")
+    expect(actTagsField).toBeDefined()
+    expect(actTagsField!.type).toBe("ActTag")
+    expect(actTagsField!.isList).toBe(true)
   })
 
   it("should parse type that inherits from a custom Type class", () => {
     const def = parseRubyTypeDefinition(
       SERVICE_TASK_TYPE_FIXTURE,
-      "service_task_type.rb"
+      "rig_task_type.rb"
     )
     expect(def).not.toBeNull()
     expect(def!.kind).toBe("object")
-    expect(def!.name).toBe("WarantyServiceTask")
+    expect(def!.name).toBe("HighWireRigTask")
     // Own fields should be present
-    const warehouseField = def!.fields.find(f => f.name === "warehouse")
-    expect(warehouseField).toBeDefined()
+    const storageTentField = def!.fields.find(f => f.name === "storageTent")
+    expect(storageTentField).toBeDefined()
   })
 
   it("should parse InputType inheritance as kind input", () => {
     const def = parseRubyTypeDefinition(
       TERRITORY_ZONE_INPUT_TYPE_FIXTURE,
-      "territory_zone_input_type.rb"
+      "circus_territory_zone_input_type.rb"
     )
     expect(def).not.toBeNull()
     expect(def!.kind).toBe("input")
-    expect(def!.name).toBe("TerritoryExpansionCollectionZoneInput")
+    expect(def!.name).toBe("CircusTerritoryZoneInput")
   })
 
   it("should parse argument declarations on input type as fields", () => {
     const def = parseRubyTypeDefinition(
       POINT_OF_INTEREST_INPUT_TYPE_FIXTURE,
-      "point_of_interest_input_type.rb"
+      "ring_marker_input_type.rb"
     )!
     const nameField = def.fields.find(f => f.name === "name")
     expect(nameField).toBeDefined()
@@ -965,33 +967,33 @@ end
   it("should parse module-based interface (include BaseInterface)", () => {
     const def = parseRubyTypeDefinition(
       MODULE_INTERFACE_FIXTURE,
-      "service_quote_item_item_interface.rb"
+      "show_item_interface.rb"
     )
     expect(def).not.toBeNull()
     expect(def!.kind).toBe("interface")
     // deriveTypeName does not strip "Interface" suffix, only "Type"
-    expect(def!.name).toBe("ServiceQuoteItemItemInterface")
+    expect(def!.name).toBe("ShowItemInterface")
     // Should have parsed its fields
     const idField = def!.fields.find(f => f.name === "id")
     expect(idField).toBeDefined()
-    const productField = def!.fields.find(f => f.name === "product")
-    expect(productField).toBeDefined()
-    expect(productField!.type).toBe("Product")
+    const propField = def!.fields.find(f => f.name === "prop")
+    expect(propField).toBeDefined()
+    expect(propField!.type).toBe("Prop")
   })
 
   it("should respect camelize: false on field declarations", () => {
     // When a field declares camelize: false, its name should NOT be camelCased
     const def = parseRubyTypeDefinition(
       APPOINTMENT_TYPE_FIXTURE,
-      "appointment_type.rb"
+      "show_slot_type.rb"
     )
     expect(def).not.toBeNull()
 
     // Field with camelize: false must keep snake_case
-    const newApptsField = def!.fields.find(f => f.name === "new_appts_plan")
-    expect(newApptsField).toBeDefined()
-    expect(newApptsField!.type).toBe("String")
-    expect(newApptsField!.camelize).toBe(false)
+    const newActsField = def!.fields.find(f => f.name === "new_acts_plan")
+    expect(newActsField).toBeDefined()
+    expect(newActsField!.type).toBe("String")
+    expect(newActsField!.camelize).toBe(false)
 
     const statusCodeField = def!.fields.find(f => f.name === "status_code")
     expect(statusCodeField).toBeDefined()
@@ -999,15 +1001,15 @@ end
     expect(statusCodeField!.camelize).toBe(false)
 
     // Field without camelize: false should be camelCased
-    const visitTimeField = def!.fields.find(f => f.name === "visitTime")
-    expect(visitTimeField).toBeDefined()
-    expect(visitTimeField!.type).toBe("String")
+    const showTimeField = def!.fields.find(f => f.name === "showTime")
+    expect(showTimeField).toBeDefined()
+    expect(showTimeField!.type).toBe("String")
     // camelize should be true (or omitted, which defaults to true)
-    expect(visitTimeField!.camelize).not.toBe(false)
+    expect(showTimeField!.camelize).not.toBe(false)
 
     // Wrong casing should NOT exist
-    expect(def!.fields.find(f => f.name === "newApptsPlan")).toBeUndefined()
-    expect(def!.fields.find(f => f.name === "visit_time")).toBeUndefined()
+    expect(def!.fields.find(f => f.name === "newActsPlan")).toBeUndefined()
+    expect(def!.fields.find(f => f.name === "show_time")).toBeUndefined()
   })
 
   it("should parse array types with inline options correctly", () => {
@@ -1015,18 +1017,18 @@ end
     // we should extract only the type name, not the options
     const def = parseRubyTypeDefinition(
       EMPLOYEE_WITH_PHONE_NUMBERS_FIXTURE,
-      "employee_type.rb"
+      "performer_type.rb"
     )
     expect(def).not.toBeNull()
 
-    const phoneNumbersField = def!.fields.find(f => f.name === "phoneNumbers")
-    expect(phoneNumbersField).toBeDefined()
-    // Type should be "PhoneNumber" (derived from PhoneNumberType after stripping inline options)
-    expect(phoneNumbersField!.type).toBe("PhoneNumber")
+    const ringTonesField = def!.fields.find(f => f.name === "ringTones")
+    expect(ringTonesField).toBeDefined()
+    // Type should be "RingTone" (derived from RingToneType after stripping inline options)
+    expect(ringTonesField!.type).toBe("RingTone")
     // Should be recognized as a list
-    expect(phoneNumbersField!.isList).toBe(true)
+    expect(ringTonesField!.isList).toBe(true)
     // Field-level null: false applies to the field itself (not nullable)
-    expect(phoneNumbersField!.nullable).toBe(false)
+    expect(ringTonesField!.nullable).toBe(false)
   })
 })
 
@@ -1065,11 +1067,11 @@ describe("parseAccessLevel", () => {
 describe("buildGraphQLSchema", () => {
   function buildTestSchema(): GraphQLTypeDefinition[] {
     return [
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
-      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "employee.rb")!,
-      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "audience.rb")!,
+      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!,
+      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "performer.rb")!,
+      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "crowd.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
-      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course.rb")!,
+      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "act.rb")!,
     ]
   }
 
@@ -1085,16 +1087,16 @@ describe("buildGraphQLSchema", () => {
     const schema = buildGraphQLSchema(typeDefs)
     const queryType = schema.getQueryType()!
     const fields = queryType.getFields()
-    expect(fields["user"]).toBeDefined()
-    expect(fields["course"]).toBeDefined()
-    expect(fields["countries"]).toBeDefined()
+    expect(fields["performer"]).toBeDefined()
+    expect(fields["act"]).toBeDefined()
+    expect(fields["tents"]).toBeDefined()
   })
 
   it("should resolve type references across types", () => {
     const typeDefs = buildTestSchema()
     const schema = buildGraphQLSchema(typeDefs)
-    const employeeType = schema.getType("Employee")
-    expect(employeeType).toBeDefined()
+    const performerType = schema.getType("Performer")
+    expect(performerType).toBeDefined()
   })
 
   it("should include mutation type from legacy Mutations type", () => {
@@ -1107,9 +1109,7 @@ describe("buildGraphQLSchema", () => {
   })
 
   it("should throw when no query root type found", () => {
-    const typeDefs = [
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
-    ]
+    const typeDefs = [parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!]
     expect(() => buildGraphQLSchema(typeDefs)).toThrow("No Query")
   })
 
@@ -1125,18 +1125,18 @@ describe("buildGraphQLSchema", () => {
 
   it("should build query fields from resolver registrations", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats_type.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats_type.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
@@ -1145,13 +1145,13 @@ describe("buildGraphQLSchema", () => {
     const queryType = schema.getQueryType()!
     const fields = queryType.getFields()
 
-    expect(fields["agentStats"]).toBeDefined()
+    expect(fields["troupeStats"]).toBeDefined()
     // Should have arguments from the resolver
-    expect(fields["agentStats"].args.length).toBeGreaterThan(0)
-    const agentIdsArg = fields["agentStats"].args.find(
-      a => a.name === "agentIds"
+    expect(fields["troupeStats"].args.length).toBeGreaterThan(0)
+    const clownIdsArg = fields["troupeStats"].args.find(
+      a => a.name === "clownIds"
     )
-    expect(agentIdsArg).toBeDefined()
+    expect(clownIdsArg).toBeDefined()
   })
 
   it("should build mutation fields from resolver registrations", () => {
@@ -1164,13 +1164,13 @@ describe("buildGraphQLSchema", () => {
     const resolvers = [
       parseResolverDefinition(
         DELETE_ADDITIONAL_SERVICE_MUTATION_FIXTURE,
-        "delete_mutation.rb"
+        "remove_extra_act_mutation.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "deleteAdditionalService",
-        resolverClassName: "Warranty::Graphql::DeleteAdditionalServiceMutation",
+        fieldName: "removeExtraAct",
+        resolverClassName: "HighWire::Graphql::RemoveExtraActMutation",
         target: "mutation",
       },
     ]
@@ -1179,10 +1179,10 @@ describe("buildGraphQLSchema", () => {
     const queryTypeDefs = [
       ...typeDefs,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
-      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "employee.rb")!,
-      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "audience.rb")!,
-      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course.rb")!,
+      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!,
+      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "performer.rb")!,
+      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "crowd.rb")!,
+      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "act.rb")!,
     ]
 
     const schema = buildGraphQLSchema(queryTypeDefs, resolvers, registrations)
@@ -1190,32 +1190,30 @@ describe("buildGraphQLSchema", () => {
     expect(mutationType).toBeDefined()
 
     const fields = mutationType.getFields()
-    expect(fields["deleteAdditionalService"]).toBeDefined()
-    const idArg = fields["deleteAdditionalService"].args.find(
-      a => a.name === "id"
-    )
+    expect(fields["removeExtraAct"]).toBeDefined()
+    const idArg = fields["removeExtraAct"].args.find(a => a.name === "id")
     expect(idArg).toBeDefined()
   })
 
   it("should build schema with both resolvers and traditional type defs", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
-      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "employee.rb")!,
-      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "audience.rb")!,
-      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course.rb")!,
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!,
+      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "performer.rb")!,
+      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "crowd.rb")!,
+      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "act.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
@@ -1225,30 +1223,30 @@ describe("buildGraphQLSchema", () => {
     const fields = queryType.getFields()
 
     // Should have resolver-registered fields
-    expect(fields["agentStats"]).toBeDefined()
+    expect(fields["troupeStats"]).toBeDefined()
     // Should also have legacy Query type fields
-    expect(fields["user"]).toBeDefined()
-    expect(fields["countries"]).toBeDefined()
+    expect(fields["performer"]).toBeDefined()
+    expect(fields["tents"]).toBeDefined()
   })
 
   it("should handle resolver with scalar return type (Int)", () => {
     const typeDefs = [
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
-      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "employee.rb")!,
-      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "audience.rb")!,
-      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course.rb")!,
+      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!,
+      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "performer.rb")!,
+      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "crowd.rb")!,
+      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "act.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         COUNT_INCOMING_CALLS_QUERY_FIXTURE,
-        "count_incoming_calls.rb"
+        "count_guest_arrivals.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "countIncomingCalls",
-        resolverClassName: "Warranty::Graphql::CountIncomingCallsQuery",
+        fieldName: "countGuestArrivals",
+        resolverClassName: "HighWire::Graphql::CountGuestArrivalsQuery",
         target: "query",
       },
     ]
@@ -1256,62 +1254,62 @@ describe("buildGraphQLSchema", () => {
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
     const queryType = schema.getQueryType()!
     const fields = queryType.getFields()
-    expect(fields["countIncomingCalls"]).toBeDefined()
+    expect(fields["countGuestArrivals"]).toBeDefined()
   })
 
   it("should handle resolver with list return type", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
     const queryType = schema.getQueryType()!
-    const field = queryType.getFields()["agentStats"]
+    const field = queryType.getFields()["troupeStats"]
     // Plain list returns are NOT wrapped in a Connection type
-    expect(field.type.toString()).toContain("WarrantyAgentStats")
+    expect(field.type.toString()).toContain("HighWireClownStats")
     expect(field.type.toString()).not.toContain("Connection")
   })
 
   it("should wrap .connection_type resolver in a Relay Connection type", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_CONNECTION_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
     const queryType = schema.getQueryType()!
-    const field = queryType.getFields()["agentStats"]
+    const field = queryType.getFields()["troupeStats"]
 
     // Return type should be a Connection, not a plain list
     expect(field.type.toString()).toContain("Connection")
 
     // Connection type should have nodes, edges, pageInfo, totalEntries
-    const connectionType = schema.getType("WarrantyAgentStatsConnection") as any
+    const connectionType = schema.getType("HighWireClownStatsConnection") as any
     expect(connectionType).toBeDefined()
     const connectionFields = connectionType.getFields()
     expect(connectionFields["nodes"]).toBeDefined()
@@ -1320,7 +1318,7 @@ describe("buildGraphQLSchema", () => {
     expect(connectionFields["totalEntries"]).toBeDefined()
 
     // Edge type should have node and cursor
-    const edgeType = schema.getType("WarrantyAgentStatsEdge") as any
+    const edgeType = schema.getType("HighWireClownStatsEdge") as any
     expect(edgeType).toBeDefined()
     const edgeFields = edgeType.getFields()
     expect(edgeFields["node"]).toBeDefined()
@@ -1329,24 +1327,24 @@ describe("buildGraphQLSchema", () => {
 
   it("should add relay connection arguments to .connection_type resolver fields", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_CONNECTION_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
-    const field = schema.getQueryType()!.getFields()["agentStats"]
+    const field = schema.getQueryType()!.getFields()["troupeStats"]
     const argNames = field.args.map((a: any) => a.name)
 
     // Standard Relay connection args should be present
@@ -1356,25 +1354,25 @@ describe("buildGraphQLSchema", () => {
     expect(argNames).toContain("after")
 
     // Resolver-specific args should also be present
-    expect(argNames).toContain("agentIds")
+    expect(argNames).toContain("clownIds")
     expect(argNames).toContain("startDate")
     expect(argNames).toContain("endDate")
   })
 
   it("should register a built-in PageInfo type with standard Relay fields", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_CONNECTION_QUERY_FIXTURE,
-        "agent_stats_query.rb"
+        "clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
       },
     ]
@@ -1390,12 +1388,12 @@ describe("buildGraphQLSchema", () => {
 
   it("should not add relay args to scalar-returning resolver fields", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const fixture = `
-module Warranty
+module HighWire
   module Graphql
-    class CountQuery < NitroGraphql::BaseQuery
+    class CountQuery < CircusApp::BaseQuery
       type Integer, null: false
       argument :filter, String, required: false
       def resolve(filter: nil); end
@@ -1407,7 +1405,7 @@ end
     const registrations: ResolverRegistration[] = [
       {
         fieldName: "count",
-        resolverClassName: "Warranty::Graphql::CountQuery",
+        resolverClassName: "HighWire::Graphql::CountQuery",
         target: "query",
       },
     ]
@@ -1423,30 +1421,30 @@ end
     const typeDefs = [
       parseRubyTypeDefinition(
         TIME_OFF_BALANCE_TYPE_FIXTURE,
-        "time_off_balance_type.rb"
+        "break_credit_type.rb"
       )!,
     ]
     const resolvers = [
       parseResolverDefinition(
         TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE,
-        "time_off_balance_query.rb"
+        "break_credit_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "timeOffBalance",
-        resolverClassName: "Attendance::Graphql::TimeOffBalanceQuery",
+        fieldName: "breakCredit",
+        resolverClassName: "CrewRoll::Graphql::BreakCreditQuery",
         target: "query",
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
-    const field = schema.getQueryType()!.getFields()["timeOffBalance"]
+    const field = schema.getQueryType()!.getFields()["breakCredit"]
 
     // Return type should be a Connection, not a plain object
     expect(field.type.toString()).toContain("Connection")
 
-    const connectionType = schema.getType("TimeOffBalanceConnection") as any
+    const connectionType = schema.getType("BreakCreditConnection") as any
     expect(connectionType).toBeDefined()
     const connectionFields = connectionType.getFields()
     expect(connectionFields["nodes"]).toBeDefined()
@@ -1460,28 +1458,28 @@ end
 
   it("should store resolver class and access in field extensions", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "agent_stats.rb")!,
+      parseRubyTypeDefinition(AGENT_STATS_TYPE_FIXTURE, "clown_stats.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         AGENT_STATS_QUERY_FIXTURE,
-        "/abs/path/agent_stats_query.rb"
+        "/abs/path/clown_stats_query.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "agentStats",
-        resolverClassName: "Warranty::Graphql::AgentStatsQuery",
+        fieldName: "troupeStats",
+        resolverClassName: "HighWire::Graphql::ClownStatsQuery",
         target: "query",
         access: ["private"],
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
-    const field = schema.getQueryType()!.getFields()["agentStats"]
+    const field = schema.getQueryType()!.getFields()["troupeStats"]
     const ext = field.extensions as any
-    expect(ext.resolverClass).toBe("Warranty::Graphql::AgentStatsQuery")
-    expect(ext.resolverFile).toBe("/abs/path/agent_stats_query.rb")
+    expect(ext.resolverClass).toBe("HighWire::Graphql::ClownStatsQuery")
+    expect(ext.resolverFile).toBe("/abs/path/clown_stats_query.rb")
     expect(ext.access).toEqual(["private"])
   })
 
@@ -1500,207 +1498,198 @@ end
     expect(fields["totalEntries"]).toBeDefined()
   })
 
-  it("should use graphql_name alias when resolving PhoneNumberType", () => {
+  it("should use graphql_name alias when resolving RingToneType", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(
-        PHONE_NUMBER_TYPE_FIXTURE,
-        "phone_number_type.rb"
-      )!,
+      parseRubyTypeDefinition(PHONE_NUMBER_TYPE_FIXTURE, "ring_tone_type.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
-    // PhoneNumberType has graphql_name "PhoneNumber", so it should be accessible as "PhoneNumber"
-    const phoneType = schema.getType("PhoneNumber")
-    expect(phoneType).toBeDefined()
-    const fields = (phoneType as any).getFields()
+    // RingToneType has graphql_name "RingTone", so it should be accessible as "RingTone"
+    const ringToneType = schema.getType("RingTone")
+    expect(ringToneType).toBeDefined()
+    const fields = (ringToneType as any).getFields()
     expect(fields["number"]).toBeDefined()
     expect(fields["numberType"]).toBeDefined()
   })
 
-  it("should use graphql_name alias when resolving PhoneNumberType", () => {
+  it("should use graphql_name alias when resolving RingToneType", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(
-        PHONE_NUMBER_TYPE_FIXTURE,
-        "phone_number_type.rb"
-      )!,
+      parseRubyTypeDefinition(PHONE_NUMBER_TYPE_FIXTURE, "ring_tone_type.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
-    // PhoneNumberType has graphql_name "PhoneNumber", so it should be accessible as "PhoneNumber"
-    const phoneType = schema.getType("PhoneNumber")
-    expect(phoneType).toBeDefined()
-    const fields = (phoneType as any).getFields()
+    // RingToneType has graphql_name "RingTone", so it should be accessible as "RingTone"
+    const ringToneType = schema.getType("RingTone")
+    expect(ringToneType).toBeDefined()
+    const fields = (ringToneType as any).getFields()
     expect(fields["number"]).toBeDefined()
     expect(fields["numberType"]).toBeDefined()
   })
 
   it("should NOT redirect type lookup through aliasMap when the name is itself a canonical graphql_name", () => {
-    // EmployeeType (Directory) has graphql_name "Employee".
-    // EmployeeType (EmployeeReviews) inherits from it with graphql_name "ReviewEmployee".
-    // Both have classBasedName "Employee", so aliasMap["Employee"] = "ReviewEmployee".
-    // A resolver that returns ::Directory::Graphql::EmployeeType normalizes to "Employee",
-    // which must resolve to the real Employee type — NOT ReviewEmployee.
-    const directoryEmployeeType = parseRubyTypeDefinition(
+    // BigTop::Graphql::PerformerType has graphql_name "Performer".
+    // ArtistReviews::Graphql::PerformerType inherits from it with graphql_name "FeaturedPerformer".
+    // Both have classBasedName "Performer", so aliasMap["Performer"] = "FeaturedPerformer".
+    // A resolver that returns ::BigTop::Graphql::PerformerType normalizes to "Performer",
+    // which must resolve to the real Performer type — NOT FeaturedPerformer.
+    const bigTopPerformerType = parseRubyTypeDefinition(
       `
-module Directory
+module BigTop
   module Graphql
-    class EmployeeType < NitroGraphql::Types::BaseObject
-      graphql_name "Employee"
+    class PerformerType < CircusApp::Types::BaseObject
+      graphql_name "Performer"
       field :id, ID, null: false
-      field :goes_by_with_last_name, String, null: false
+      field :goes_by_stage_name, String, null: false
     end
   end
 end
 `,
-      "directory/employee_type.rb"
+      "big_top/performer_type.rb"
     )!
 
-    const reviewEmployeeType = parseRubyTypeDefinition(
+    const artistReviewsPerformerType = parseRubyTypeDefinition(
       `
-module EmployeeReviews
+module ArtistReviews
   module Graphql
-    class EmployeeType < ::Directory::Graphql::EmployeeType
-      graphql_name "ReviewEmployee"
-      description "An employee in the context of a review."
+    class PerformerType < ::BigTop::Graphql::PerformerType
+      graphql_name "FeaturedPerformer"
+      description "A performer in the context of a review."
     end
   end
 end
 `,
-      "employee_reviews/employee_type.rb"
+      "artist_reviews/performer_type.rb"
     )!
 
-    const userQueryResolver = parseResolverDefinition(
+    const performerQueryResolver = parseResolverDefinition(
       `
-module UserProfile
+module PerformerProfile
   module Graphql
-    class UserQuery < NitroGraphql::BaseQuery
-      type ::Directory::Graphql::EmployeeType, null: false
+    class PerformerQuery < CircusApp::BaseQuery
+      type ::BigTop::Graphql::PerformerType, null: false
       argument :id, Integer, required: false
       def resolve(id:); end
     end
   end
 end
 `,
-      "user_profile/user_query.rb"
+      "performer_profile/performer_query.rb"
     )!
 
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "user",
-        resolverClassName: "::UserProfile::Graphql::UserQuery",
+        fieldName: "performer",
+        resolverClassName: "::PerformerProfile::Graphql::PerformerQuery",
         target: "query",
       },
     ]
 
     const schema = buildGraphQLSchema(
-      [directoryEmployeeType, reviewEmployeeType],
-      [userQueryResolver],
+      [bigTopPerformerType, artistReviewsPerformerType],
+      [performerQueryResolver],
       registrations
     )
 
     const queryType = schema.getQueryType()!
-    const userField = queryType.getFields()["user"]
+    const userField = queryType.getFields()["performer"]
     expect(userField).toBeDefined()
 
-    // The return type must be Employee, not ReviewEmployee
+    // The return type must be Performer, not FeaturedPerformer
     const returnTypeName =
       (userField.type as any).name ?? (userField.type as any).ofType?.name
-    expect(returnTypeName).toBe("Employee")
+    expect(returnTypeName).toBe("Performer")
 
-    // The Employee type must have goesByWithLastName
-    const employeeType = schema.getType("Employee") as any
-    expect(employeeType).toBeDefined()
-    expect(employeeType.getFields()["goesByWithLastName"]).toBeDefined()
+    // The Performer type must have goesByStageName
+    const performerType = schema.getType("Performer") as any
+    expect(performerType).toBeDefined()
+    expect(performerType.getFields()["goesByStageName"]).toBeDefined()
 
-    // ReviewEmployee must still exist as a separate type
-    const reviewType = schema.getType("ReviewEmployee")
+    // FeaturedPerformer must still exist as a separate type
+    const reviewType = schema.getType("FeaturedPerformer")
     expect(reviewType).toBeDefined()
   })
 
   it("should resolve input type with graphql_name override when referenced in mutation arguments", () => {
     // This test specifically covers the case where two namespaces define classes
     // with the same Ruby class name but different graphql_names.  Without rubyPath
-    // disambiguation, BrandHeadlines' CalendarEventType would resolve to Spaces'
-    // CalendarEvent type (since "CalendarEvent" is already in the registry first).
+    // disambiguation, Marquee's ShowEventType would resolve to TentSpace's
+    // TentShowEvent type (since "TentShowEvent" is already in the registry first).
     const typeDefs = [
-      // Spaces types with shorter graphql_names are registered first (simulating
+      // TentSpace types with shorter graphql_names are registered first (simulating
       // the production scenario where they'd win the normalizeRubyType lookup)
       parseRubyTypeDefinition(
         SPACES_CALENDAR_EVENT_TYPE_FIXTURE,
-        "spaces/calendar_event_type.rb"
+        "tent_space/show_event_type.rb"
       )!,
       parseRubyTypeDefinition(
         SPACES_CALENDAR_EVENT_INPUT_FIXTURE,
-        "spaces/calendar_event_input.rb"
+        "tent_space/show_event_input.rb"
       )!,
-      // BrandHeadlines types with the fully-qualified ::BrandHeadlines::Graphql:: refs
+      // Marquee types with the fully-qualified ::Marquee::Graphql:: refs
       parseRubyTypeDefinition(
         CALENDAR_EVENT_TYPE_FIXTURE,
-        "brand_headlines/calendar_event_type.rb"
+        "marquee/show_event_type.rb"
       )!,
       parseRubyTypeDefinition(
         CALENDAR_EVENT_INPUT_FIXTURE,
-        "brand_headlines/calendar_event_input.rb"
+        "marquee/show_event_input.rb"
       )!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
     ]
     const resolvers = [
       parseResolverDefinition(
         CREATE_OR_UPDATE_CALENDAR_EVENT_MUTATION_FIXTURE,
-        "brand_headlines/create_or_update_calendar_event_mutation.rb"
+        "marquee/create_or_update_show_event_mutation.rb"
       )!,
     ]
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "createOrUpdateCalendarEvent",
-        resolverClassName:
-          "BrandHeadlines::Graphql::CreateOrUpdateCalendarEventMutation",
+        fieldName: "createOrUpdateShowEvent",
+        resolverClassName: "Marquee::Graphql::CreateOrUpdateShowEventMutation",
         target: "mutation",
       },
     ]
 
     const schema = buildGraphQLSchema(typeDefs, resolvers, registrations)
     const mutationType = schema.getMutationType()!
-    const field = mutationType.getFields()["createOrUpdateCalendarEvent"]
+    const field = mutationType.getFields()["createOrUpdateShowEvent"]
 
     expect(field).toBeDefined()
 
-    // Return type must be exactly BrandHeadlinesCalendarEvent!, NOT CalendarEvent! (Spaces)
-    expect(field.type.toString()).toBe("BrandHeadlinesCalendarEvent!")
+    // Return type must be exactly MarqueeShowEvent!, NOT TentShowEvent! (TentSpace)
+    expect(field.type.toString()).toBe("MarqueeShowEvent!")
 
-    // The input argument should resolve to BrandHeadlinesCalendarEventInput, NOT CalendarEventInput (Spaces)
+    // The input argument should resolve to MarqueeShowEventInput, NOT TentShowEventInput (TentSpace)
     const inputArg = field.args.find(a => a.name === "input")
     expect(inputArg).toBeDefined()
-    expect(inputArg!.type.toString()).toContain(
-      "BrandHeadlinesCalendarEventInput"
-    )
+    expect(inputArg!.type.toString()).toContain("MarqueeShowEventInput")
 
-    // The output type should exist with correct BrandHeadlines fields
-    const outputType = schema.getType("BrandHeadlinesCalendarEvent") as any
+    // The output type should exist with correct Marquee fields
+    const outputType = schema.getType("MarqueeShowEvent") as any
     expect(outputType).toBeDefined()
     const outputFields = outputType.getFields()
     expect(outputFields["title"]).toBeDefined()
     expect(outputFields["location"]).toBeDefined()
     expect(outputFields["startDate"]).toBeDefined()
-    // Spaces' field (summary) must NOT appear on BrandHeadlines' type
+    // TentSpace's field (summary) must NOT appear on Marquee's type
     expect(outputFields["summary"]).toBeUndefined()
 
-    // The input type should exist with correct BrandHeadlines fields
-    const inputType = schema.getType("BrandHeadlinesCalendarEventInput") as any
+    // The input type should exist with correct Marquee fields
+    const inputType = schema.getType("MarqueeShowEventInput") as any
     expect(inputType).toBeDefined()
     const inputFields = inputType.getFields()
     expect(inputFields["title"]).toBeDefined()
     expect(inputFields["location"]).toBeDefined()
-    // Spaces' field (description) must NOT appear on BrandHeadlines' input
+    // TentSpace's field (description) must NOT appear on Marquee's input
     expect(inputFields["description"]).toBeUndefined()
 
-    // Spaces types must still exist independently with their own fields
-    const spacesOutputType = schema.getType("CalendarEvent") as any
+    // TentSpace types must still exist independently with their own fields
+    const spacesOutputType = schema.getType("TentShowEvent") as any
     expect(spacesOutputType).toBeDefined()
     const spacesOutputFields = spacesOutputType.getFields()
     expect(spacesOutputFields["summary"]).toBeDefined()
 
-    const spacesInputType = schema.getType("CalendarEventInput") as any
+    const spacesInputType = schema.getType("TentShowEventInput") as any
     expect(spacesInputType).toBeDefined()
     const spacesInputFields = spacesInputType.getFields()
     expect(spacesInputFields["description"]).toBeDefined()
@@ -1708,53 +1697,47 @@ end
 
   it("should inherit fields from parent type", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(
-        PROJECT_TASK_TYPE_FIXTURE,
-        "project_task_type.rb"
-      )!,
-      parseRubyTypeDefinition(
-        SERVICE_TASK_TYPE_FIXTURE,
-        "service_task_type.rb"
-      )!,
+      parseRubyTypeDefinition(PROJECT_TASK_TYPE_FIXTURE, "show_task_type.rb")!,
+      parseRubyTypeDefinition(SERVICE_TASK_TYPE_FIXTURE, "rig_task_type.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
-    // ServiceTaskType inherits from ProjectTaskType
-    const serviceTaskType = schema.getType("WarantyServiceTask")
-    expect(serviceTaskType).toBeDefined()
-    const fields = (serviceTaskType as any).getFields()
+    // RigTaskType inherits from ShowTaskType
+    const rigTaskType = schema.getType("HighWireRigTask")
+    expect(rigTaskType).toBeDefined()
+    const fields = (rigTaskType as any).getFields()
     // Own fields
-    expect(fields["warehouse"]).toBeDefined()
-    expect(fields["pulseEnabledHomeownerIds"]).toBeDefined()
-    // Inherited from ProjectTaskType
+    expect(fields["storageTent"]).toBeDefined()
+    expect(fields["vipHolderIds"]).toBeDefined()
+    // Inherited from ShowTaskType
     expect(fields["id"]).toBeDefined()
     expect(fields["scheduledDate"]).toBeDefined()
-    expect(fields["project"]).toBeDefined()
-    expect(fields["inspectionAppointment"]).toBeDefined()
+    expect(fields["show"]).toBeDefined()
+    expect(fields["showSlot"]).toBeDefined()
   })
 
   it("should build input type inheriting from another InputType", () => {
     const typeDefs = [
       parseRubyTypeDefinition(
         POINT_OF_INTEREST_INPUT_TYPE_FIXTURE,
-        "poi_input.rb"
+        "ring_marker_input.rb"
       )!,
       parseRubyTypeDefinition(
         TERRITORY_ZONE_INPUT_TYPE_FIXTURE,
-        "zone_input.rb"
+        "circus_territory_zone_input.rb"
       )!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     // Should build schema without throwing "must be Input Type" error
     expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
     const schema = buildGraphQLSchema(typeDefs)
-    const zoneInput = schema.getType("TerritoryExpansionCollectionZoneInput")
+    const zoneInput = schema.getType("CircusTerritoryZoneInput")
     expect(zoneInput).toBeDefined()
     const fields = (zoneInput as any).getFields()
     // Own arguments
     expect(fields["id"]).toBeDefined()
     expect(fields["color"]).toBeDefined()
-    // Inherited from PointOfInterestInputType
+    // Inherited from RingMarkerInputType
     expect(fields["name"]).toBeDefined()
     expect(fields["latitude"]).toBeDefined()
     expect(fields["longitude"]).toBeDefined()
@@ -1762,147 +1745,144 @@ end
 
   it("should register module-based interface and resolve field types that reference it", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(MODULE_INTERFACE_FIXTURE, "item_interface.rb")!,
+      parseRubyTypeDefinition(
+        MODULE_INTERFACE_FIXTURE,
+        "show_item_interface.rb"
+      )!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
     const schema = buildGraphQLSchema(typeDefs)
     // Registered under the full module name (Interface suffix kept by deriveTypeName)
-    const ifaceType = schema.getType("ServiceQuoteItemItemInterface")
+    const ifaceType = schema.getType("ShowItemInterface")
     expect(ifaceType).toBeDefined()
-    // Its fields should be accessible (id, model, product)
+    // Its fields should be accessible (id, model, prop)
     const fields = (ifaceType as any).getFields()
     expect(fields["id"]).toBeDefined()
     expect(fields["model"]).toBeDefined()
-    expect(fields["product"]).toBeDefined()
+    expect(fields["prop"]).toBeDefined()
   })
 
   it("should parse a union type (BaseUnion) with possible_types", () => {
     const def = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ItemableType < NitroGraphql::Types::BaseUnion
-      graphql_name "WarrantyItemableType"
-      possible_types ServiceQuoteItemType, ServiceQuoteNonItemType
+    class ActItemType < CircusApp::Types::BaseUnion
+      graphql_name "HighWireActItemType"
+      possible_types ShowQuoteItemType, ShowQuoteExtraType
     end
   end
 end
 `,
-      "itemable_type.rb"
+      "act_item_type.rb"
     )
     expect(def).not.toBeNull()
     expect(def!.kind).toBe("union")
-    expect(def!.name).toBe("WarrantyItemableType")
-    expect(def!.possibleTypes).toEqual([
-      "ServiceQuoteItem",
-      "ServiceQuoteNonItem",
-    ])
+    expect(def!.name).toBe("HighWireActItemType")
+    expect(def!.possibleTypes).toEqual(["ShowQuoteItem", "ShowQuoteExtra"])
   })
 
   it("should parse a union type with parenthesised multiline possible_types", () => {
     const def = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ItemableType < NitroGraphql::Types::BaseUnion
-      graphql_name "WarrantyItemableType"
+    class ActItemType < CircusApp::Types::BaseUnion
+      graphql_name "HighWireActItemType"
       possible_types(
-        ::Warranty::Graphql::ServiceQuoteItemType,
-        ::Warranty::Graphql::ServiceQuoteNonItemType
+        ::HighWire::Graphql::ShowQuoteItemType,
+        ::HighWire::Graphql::ShowQuoteExtraType
       )
     end
   end
 end
 `,
-      "itemable_type.rb"
+      "act_item_type.rb"
     )
     expect(def).not.toBeNull()
     expect(def!.kind).toBe("union")
-    expect(def!.possibleTypes).toEqual([
-      "ServiceQuoteItem",
-      "ServiceQuoteNonItem",
-    ])
+    expect(def!.possibleTypes).toEqual(["ShowQuoteItem", "ShowQuoteExtra"])
   })
 
   it("should build a union type in the schema and allow inline fragment spreads", () => {
-    const serviceQuoteItemType = parseRubyTypeDefinition(
+    const showQuoteItemType = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ServiceQuoteItemType < NitroGraphql::Types::BaseObject
-      graphql_name "ServiceQuoteItemType"
+    class ShowQuoteItemType < CircusApp::Types::BaseObject
+      graphql_name "ShowQuoteItemType"
       field :id, ID, null: false
       field :item_charge, Float
     end
   end
 end
 `,
-      "service_quote_item_type.rb"
+      "show_quote_item_type.rb"
     )!
 
-    const serviceQuoteNonItemType = parseRubyTypeDefinition(
+    const showQuoteExtraType = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ServiceQuoteNonItemType < NitroGraphql::Types::BaseObject
-      graphql_name "ServiceQuoteNonItemType"
+    class ShowQuoteExtraType < CircusApp::Types::BaseObject
+      graphql_name "ShowQuoteExtraType"
       field :id, ID, null: false
       field :name, String
     end
   end
 end
 `,
-      "service_quote_non_item_type.rb"
+      "show_quote_extra_type.rb"
     )!
 
-    const itemableUnion = parseRubyTypeDefinition(
+    const actItemUnion = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ItemableType < NitroGraphql::Types::BaseUnion
-      graphql_name "WarrantyItemableType"
-      possible_types ServiceQuoteItemType, ServiceQuoteNonItemType
+    class ActItemType < CircusApp::Types::BaseUnion
+      graphql_name "HighWireActItemType"
+      possible_types ShowQuoteItemType, ShowQuoteExtraType
     end
   end
 end
 `,
-      "itemable_type.rb"
+      "act_item_type.rb"
     )!
 
-    expect(itemableUnion.kind).toBe("union")
-    expect(itemableUnion.possibleTypes).toEqual([
-      "ServiceQuoteItem",
-      "ServiceQuoteNonItem",
+    expect(actItemUnion.kind).toBe("union")
+    expect(actItemUnion.possibleTypes).toEqual([
+      "ShowQuoteItem",
+      "ShowQuoteExtra",
     ])
 
     const typeDefs = [
-      serviceQuoteItemType,
-      serviceQuoteNonItemType,
-      itemableUnion,
+      showQuoteItemType,
+      showQuoteExtraType,
+      actItemUnion,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
     ]
     expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
     const schema = buildGraphQLSchema(typeDefs)
 
     // Union type itself should be in the schema
-    const unionType = schema.getType("WarrantyItemableType")
+    const unionType = schema.getType("HighWireActItemType")
     expect(unionType).toBeDefined()
     expect(unionType).toBeInstanceOf(require("graphql").GraphQLUnionType)
 
     // The member types should be accessible
     const memberNames = (unionType as any).getTypes().map((t: any) => t.name)
-    expect(memberNames).toContain("ServiceQuoteItemType")
-    expect(memberNames).toContain("ServiceQuoteNonItemType")
+    expect(memberNames).toContain("ShowQuoteItemType")
+    expect(memberNames).toContain("ShowQuoteExtraType")
   })
 
   it("should parse inline field arguments from do...end blocks on interface fields", () => {
     const def = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    module ServiceQuoteItemItemInterface
-      include NitroGraphql::Types::BaseInterface
+    module ShowItemInterface
+      include CircusApp::Types::BaseInterface
 
       field :id, ID, null: false
       field :media_items, [String], access: %i[private customer] do
@@ -1912,7 +1892,7 @@ module Warranty
   end
 end
 `,
-      "service_quote_item_item_interface.rb"
+      "show_item_interface.rb"
     )!
 
     expect(def.kind).toBe("interface")
@@ -1928,10 +1908,10 @@ end
   it("should include field args in built interface type so queries can use them", () => {
     const ifaceTypeDef = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    module ServiceQuoteItemItemInterface
-      include NitroGraphql::Types::BaseInterface
+    module ShowItemInterface
+      include CircusApp::Types::BaseInterface
 
       field :id, ID, null: false
       field :media_items, [String], access: %i[private customer] do
@@ -1941,7 +1921,7 @@ module Warranty
   end
 end
 `,
-      "service_quote_item_item_interface.rb"
+      "show_item_interface.rb"
     )!
 
     const typeDefs = [
@@ -1951,7 +1931,7 @@ end
     expect(() => buildGraphQLSchema(typeDefs)).not.toThrow()
     const schema = buildGraphQLSchema(typeDefs)
 
-    const ifaceType = schema.getType("ServiceQuoteItemItemInterface") as any
+    const ifaceType = schema.getType("ShowItemInterface") as any
     expect(ifaceType).toBeDefined()
     const mediaItemsField = ifaceType.getFields()["mediaItems"]
     expect(mediaItemsField).toBeDefined()
@@ -1961,53 +1941,53 @@ end
   })
 
   it("should resolve field type via typeRubyPath when two types share the same classBasedName", () => {
-    // Reproduces the EquipmentAsset collision:
-    //   EquipmentAssets::Graphql::EquipmentAssetType  → graphql_name "EquipmentAsset"
-    //   Directory::Graphql::EquipmentAssetType        → graphql_name "equipment_asset"
-    // Both normalise to "EquipmentAsset" via normalizeRubyType.  Without
+    // Reproduces the PropAsset collision:
+    //   PropHouse::Graphql::PropAssetType  → graphql_name "PropAsset"
+    //   BigTop::Graphql::PropAssetType     → graphql_name "prop_item"
+    // Both normalise to "PropAsset" via normalizeRubyType.  Without
     // typeRubyPath tracking the field would pick up the wrong (simpler) type.
     const typeDefs = [
-      // Register the simpler type first so it pre-occupies the "EquipmentAsset" name
+      // Register the simpler type first so it pre-occupies the "PropAsset" name
       parseRubyTypeDefinition(
         EQUIPMENT_ASSETS_EQUIPMENT_ASSET_TYPE_FIXTURE,
-        "equipment_assets/equipment_asset_type.rb"
+        "prop_house/prop_asset_type.rb"
       )!,
       parseRubyTypeDefinition(
         DIRECTORY_EQUIPMENT_ASSET_TYPE_FIXTURE,
-        "directory/equipment_asset_type.rb"
+        "big_top/prop_asset_type.rb"
       )!,
       parseRubyTypeDefinition(
         EMPLOYEE_WITH_EQUIPMENT_TYPE_FIXTURE,
-        "directory/employee_type.rb"
+        "big_top/performer_type.rb"
       )!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
 
-    const employeeType = schema.getType("Employee") as any
+    const employeeType = schema.getType("Performer") as any
     expect(employeeType).toBeDefined()
     const empFields = employeeType.getFields()
 
-    // The field must exist and resolve to "equipment_asset" (Directory's version)
-    const equipField = empFields["equipmentAssets"]
+    // The field must exist and resolve to "prop_item" (BigTop's version)
+    const equipField = empFields["propAssets"]
     expect(equipField).toBeDefined()
 
     // Unwrap list/non-null wrappers to get the base named type
     let elementType: any = equipField.type
     while (elementType.ofType) elementType = elementType.ofType
-    expect(elementType.name).toBe("equipment_asset")
+    expect(elementType.name).toBe("prop_item")
 
-    // Directory's "equipment_asset" type must have the richer fields
-    const assetType = schema.getType("equipment_asset") as any
+    // BigTop's "prop_item" type must have the richer fields
+    const assetType = schema.getType("prop_item") as any
     expect(assetType).toBeDefined()
     const assetFields = assetType.getFields()
-    expect(assetFields["serialNumber"]).toBeDefined()
+    expect(assetFields["propSerial"]).toBeDefined()
     expect(assetFields["status"]).toBeDefined()
 
-    // The simpler "EquipmentAsset" type must still exist but lacks serialNumber
-    const simpleType = schema.getType("EquipmentAsset") as any
+    // The simpler "PropAsset" type must still exist but lacks propSerial
+    const simpleType = schema.getType("PropAsset") as any
     expect(simpleType).toBeDefined()
-    expect(simpleType.getFields()["serialNumber"]).toBeUndefined()
+    expect(simpleType.getFields()["propSerial"]).toBeUndefined()
   })
 
   it("should wire return type and arguments for field: resolver: Class fields", () => {
@@ -2037,30 +2017,30 @@ end
     ]
     const schema = buildGraphQLSchema(typeDefs, resolvers)
 
-    const domainType = schema.getType("SupportTicketDomain") as any
+    const domainType = schema.getType("BackstageHub") as any
     expect(domainType).toBeDefined()
     const domainFields = domainType.getFields()
 
-    const paginatedField = domainFields["paginatedTickets"]
+    const paginatedField = domainFields["showSeats"]
     expect(paginatedField).toBeDefined()
 
-    // Return type must be PaginatedTicketsResult (from the resolver declaration)
+    // Return type must be ShowSeatsResult (from the resolver declaration)
     let returnType: any = paginatedField.type
     while (returnType.ofType) returnType = returnType.ofType
-    expect(returnType.name).toBe("PaginatedTicketsResult")
+    expect(returnType.name).toBe("ShowSeatsResult")
 
-    // Arguments from PaginatedTicketsQuery must be exposed on the field
+    // Arguments from ShowSeatsQuery must be exposed on the field
     const argNames: string[] = paginatedField.args.map((a: any) => a.name)
     expect(argNames).toContain("search")
     expect(argNames).toContain("page")
     expect(argNames).toContain("perPage")
 
-    // PaginatedTicketsResult type must have its own fields
-    const resultType = schema.getType("PaginatedTicketsResult") as any
+    // ShowSeatsResult type must have its own fields
+    const resultType = schema.getType("ShowSeatsResult") as any
     expect(resultType).toBeDefined()
     const resultFields = resultType.getFields()
     expect(resultFields["totalCount"]).toBeDefined()
-    expect(resultFields["tickets"]).toBeDefined()
+    expect(resultFields["seats"]).toBeDefined()
   })
 
   it("should respect camelize: false on field declarations", () => {
@@ -2075,19 +2055,19 @@ end
     ]
     const schema = buildGraphQLSchema(typeDefs)
 
-    const appointmentType = schema.getType("Appointment") as any
+    const appointmentType = schema.getType("ShowSlot") as any
     expect(appointmentType).toBeDefined()
     const appointmentFields = appointmentType.getFields()
 
     // Fields with camelize: false should keep their snake_case names
-    expect(appointmentFields["new_appts_plan"]).toBeDefined()
+    expect(appointmentFields["new_acts_plan"]).toBeDefined()
     expect(appointmentFields["status_code"]).toBeDefined()
 
     // Fields without camelize: false should be camelCased
-    expect(appointmentFields["visitTime"]).toBeDefined()
+    expect(appointmentFields["showTime"]).toBeDefined()
 
     // The incorrectly camelCased versions should NOT exist
-    expect(appointmentFields["newApptsPlan"]).toBeUndefined()
+    expect(appointmentFields["newActsPlan"]).toBeUndefined()
     expect(appointmentFields["statusCode"]).toBeUndefined()
   })
 
@@ -2109,12 +2089,12 @@ end
     ]
     const schema = buildGraphQLSchema(typeDefs)
 
-    const employeeType = schema.getType("Employee") as any
+    const employeeType = schema.getType("Performer") as any
     expect(employeeType).toBeDefined()
     const employeeFields = employeeType.getFields()
 
     // Field should exist
-    const phoneNumbersField = employeeFields["phoneNumbers"]
+    const phoneNumbersField = employeeFields["ringTones"]
     expect(phoneNumbersField).toBeDefined()
 
     // Unwrap list and non-null wrappers to get base type
@@ -2123,11 +2103,11 @@ end
       elementType = elementType.ofType
     }
 
-    // Base type should be PhoneNumber, not some unknown mangled type
-    expect(elementType.name).toBe("PhoneNumber")
+    // Base type should be RingTone, not some unknown mangled type
+    expect(elementType.name).toBe("RingTone")
 
-    // PhoneNumber type must be properly resolved with its fields
-    const phoneNumberType = schema.getType("PhoneNumber") as any
+    // RingTone type must be properly resolved with its fields
+    const phoneNumberType = schema.getType("RingTone") as any
     expect(phoneNumberType).toBeDefined()
     const phoneNumberFields = phoneNumberType.getFields()
     expect(phoneNumberFields["extension"]).toBeDefined()
@@ -2136,17 +2116,17 @@ end
 
   it("should handle field with do...end block for inline arguments", () => {
     // A field can open a `do...end` block to declare inline arguments:
-    //   field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
-    //     argument :date, NitroGraphql::Types::Date, required: false
+    //   field :pay_period_summary, Juggler::Graphql::JugglerPaySummaryType do
+    //     argument :date, CircusApp::Types::Date, required: false
     //   end
     // The ` do` suffix must not corrupt the type name, and the argument must be wired up.
     const payPeriodSummaryType = parseRubyTypeDefinition(
       `
-module Craftsman
+module Juggler
   module Graphql
-    class CraftsmanPayPeriodSummaryType < NitroGraphql::Types::BaseObject
-      graphql_name "CraftsmanPayPeriodSummary"
-      description "A craftsman pay period summary"
+    class JugglerPaySummaryType < CircusApp::Types::BaseObject
+      graphql_name "JugglerPaySummary"
+      description "A juggler pay period summary"
 
       field :id, ID, null: false
       field :total_pay, Float, null: false
@@ -2154,53 +2134,53 @@ module Craftsman
   end
 end
 `,
-      "craftsman/craftsman_pay_period_summary_type.rb"
+      "juggler/juggler_pay_summary_type.rb"
     )!
 
-    const craftsmanType = parseRubyTypeDefinition(
+    const jugglerType = parseRubyTypeDefinition(
       `
-module Craftsman
+module Juggler
   module Graphql
-    class CraftsmanType < NitroGraphql::Types::BaseObject
-      graphql_name "Craftsman"
-      description "A craftsman"
+    class JugglerType < CircusApp::Types::BaseObject
+      graphql_name "Juggler"
+      description "A juggler"
 
       field :id, ID, null: false
-      field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
+      field :pay_period_summary, Juggler::Graphql::JugglerPaySummaryType do
         argument :date, String, required: false
       end
     end
   end
 end
 `,
-      "craftsman/craftsman_type.rb"
+      "juggler/juggler_type.rb"
     )!
 
     const typeDefs = [
       payPeriodSummaryType,
-      craftsmanType,
+      jugglerType,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
 
-    const craftsmanGqlType = schema.getType("Craftsman") as any
-    expect(craftsmanGqlType).toBeDefined()
-    const fields = craftsmanGqlType.getFields()
+    const jugglerGqlType = schema.getType("Juggler") as any
+    expect(jugglerGqlType).toBeDefined()
+    const fields = jugglerGqlType.getFields()
 
-    // Field must exist and resolve to CraftsmanPayPeriodSummary, not unknown
+    // Field must exist and resolve to JugglerPaySummary, not unknown
     const field = fields["payPeriodSummary"]
     expect(field).toBeDefined()
 
     let elementType: any = field.type
     while (elementType.ofType) elementType = elementType.ofType
-    expect(elementType.name).toBe("CraftsmanPayPeriodSummary")
+    expect(elementType.name).toBe("JugglerPaySummary")
 
     // The inline argument `date` must be wired up on the field
     const dateArg = field.args?.find((a: any) => a.name === "date")
     expect(dateArg).toBeDefined()
 
-    // CraftsmanPayPeriodSummary must have its own fields
-    const summaryType = schema.getType("CraftsmanPayPeriodSummary") as any
+    // JugglerPaySummary must have its own fields
+    const summaryType = schema.getType("JugglerPaySummary") as any
     expect(summaryType).toBeDefined()
     const summaryFields = summaryType.getFields()
     expect(summaryFields["id"]).toBeDefined()
@@ -2211,252 +2191,280 @@ end
 describe("resolver namespace collision", () => {
   it("should pick the correct resolver when two namespaces define the same class name", () => {
     // Reproduces the real case:
-    //   field :pending_proposed_warranty_item_changes,
-    //         resolver: ::Warranty::Graphql::PendingProposedItemChangesQuery
+    //   field :pending_high_wire_act_revisions,
+    //         resolver: ::HighWire::Graphql::PendingActRevisionsQuery
     //
-    // Two components both have a resolver named PendingProposedItemChangesQuery
+    // Two components both have a resolver named PendingActRevisionsQuery
     // but in different namespaces with different arguments.  The field name has
-    // "warranty" in it but the class name does not — make sure that does not
+    // "high_wire" in it but the class name does not — make sure that does not
     // confuse the matching and that the explicit resolver: path wins.
 
-    const warrantyResolver = parseResolverDefinition(
+    const highWireResolver = parseResolverDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
-      type [::Warranty::Graphql::ProposedItemChangeType], null: true
+    class PendingActRevisionsQuery < CircusApp::BaseQuery
+      type [::HighWire::Graphql::ActRevisionType], null: true
 
-      argument :service_quote_id, ID
+      argument :show_quote_id, ID
 
-      def resolve(service_quote_id:)
+      def resolve(show_quote_id:)
       end
     end
   end
 end
 `,
-      "warranty/pending_proposed_item_changes_query.rb"
+      "high_wire/pending_act_revisions_query.rb"
     )!
 
-    const projectsResolver = parseResolverDefinition(
+    const bigShowsResolver = parseResolverDefinition(
       `
-module Projects
+module BigShows
   module Graphql
-    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+    class PendingActRevisionsQuery < CircusApp::BaseQuery
       type [String], null: true
 
-      argument :project_id, ID
-      argument :product_id, ID
+      argument :show_id, ID
+      argument :prop_id, ID
 
-      def resolve(project_id:, product_id:)
+      def resolve(show_id:, prop_id:)
       end
     end
   end
 end
 `,
-      "projects/pending_proposed_item_changes_query.rb"
+      "big_shows/pending_act_revisions_query.rb"
     )!
 
-    expect(warrantyResolver.className).toBe(
-      "Warranty::Graphql::PendingProposedItemChangesQuery"
+    expect(highWireResolver.className).toBe(
+      "HighWire::Graphql::PendingActRevisionsQuery"
     )
-    expect(projectsResolver.className).toBe(
-      "Projects::Graphql::PendingProposedItemChangesQuery"
+    expect(bigShowsResolver.className).toBe(
+      "BigShows::Graphql::PendingActRevisionsQuery"
     )
 
-    const proposedItemChangeType = parseRubyTypeDefinition(
+    const actRevisionType = parseRubyTypeDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class ProposedItemChangeType < NitroGraphql::Types::BaseObject
+    class ActRevisionType < CircusApp::Types::BaseObject
       field :id, ID, null: false
     end
   end
 end
 `,
-      "proposed_item_change_type.rb"
+      "act_revision_type.rb"
     )!
 
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "pendingProposedWarrantyItemChanges",
-        resolverClassName:
-          "::Warranty::Graphql::PendingProposedItemChangesQuery",
+        fieldName: "pendingHighWireActRevisions",
+        resolverClassName: "::HighWire::Graphql::PendingActRevisionsQuery",
         target: "query",
       },
     ]
 
-    // Pass both resolvers — Projects resolver must NOT win
+    // Pass both resolvers — BigShows resolver must NOT win
     const schema = buildGraphQLSchema(
-      [proposedItemChangeType],
-      [warrantyResolver, projectsResolver],
+      [actRevisionType],
+      [highWireResolver, bigShowsResolver],
       registrations
     )
 
     const queryType = schema.getQueryType()!
-    const field = queryType.getFields()["pendingProposedWarrantyItemChanges"]
+    const field = queryType.getFields()["pendingHighWireActRevisions"]
     expect(field).toBeDefined()
 
     const argNames = field.args.map(a => a.name)
-    // Must have serviceQuoteId from the Warranty resolver
-    expect(argNames).toContain("serviceQuoteId")
-    // Must NOT have projectId / productId from the Projects resolver
-    expect(argNames).not.toContain("projectId")
-    expect(argNames).not.toContain("productId")
+    // Must have showQuoteId from the HighWire resolver
+    expect(argNames).toContain("showQuoteId")
+    // Must NOT have showId / propId from the BigShows resolver
+    expect(argNames).not.toContain("showId")
+    expect(argNames).not.toContain("propId")
   })
 
-  it("should also pick correct resolver when Projects resolver is inserted first in map order", () => {
-    const warrantyResolver = parseResolverDefinition(
+  it("should also pick correct resolver when BigShows resolver is inserted first in map order", () => {
+    const highWireResolver = parseResolverDefinition(
       `
-module Warranty
+module HighWire
   module Graphql
-    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+    class PendingActRevisionsQuery < CircusApp::BaseQuery
       type [String], null: true
-      argument :service_quote_id, ID
-      def resolve(service_quote_id:); end
+      argument :show_quote_id, ID
+      def resolve(show_quote_id:); end
     end
   end
 end
 `,
-      "warranty/pending_proposed_item_changes_query.rb"
+      "high_wire/pending_act_revisions_query.rb"
     )!
 
-    const projectsResolver = parseResolverDefinition(
+    const bigShowsResolver = parseResolverDefinition(
       `
-module Projects
+module BigShows
   module Graphql
-    class PendingProposedItemChangesQuery < NitroGraphql::BaseQuery
+    class PendingActRevisionsQuery < CircusApp::BaseQuery
       type [String], null: true
-      argument :project_id, ID
-      argument :product_id, ID
-      def resolve(project_id:, product_id:); end
+      argument :show_id, ID
+      argument :prop_id, ID
+      def resolve(show_id:, prop_id:); end
     end
   end
 end
 `,
-      "projects/pending_proposed_item_changes_query.rb"
+      "big_shows/pending_act_revisions_query.rb"
     )!
 
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "pendingProposedWarrantyItemChanges",
+        fieldName: "pendingHighWireActRevisions",
         // leading :: is stripped during matching
-        resolverClassName:
-          "::Warranty::Graphql::PendingProposedItemChangesQuery",
+        resolverClassName: "::HighWire::Graphql::PendingActRevisionsQuery",
         target: "query",
       },
     ]
 
-    // Projects resolver passed first — must still resolve to Warranty
+    // BigShows resolver passed first — must still resolve to HighWire
     const schema = buildGraphQLSchema(
       [],
-      [projectsResolver, warrantyResolver],
+      [bigShowsResolver, highWireResolver],
       registrations
     )
 
     const queryType = schema.getQueryType()!
-    const field = queryType.getFields()["pendingProposedWarrantyItemChanges"]
+    const field = queryType.getFields()["pendingHighWireActRevisions"]
     expect(field).toBeDefined()
 
     const argNames = field.args.map(a => a.name)
-    expect(argNames).toContain("serviceQuoteId")
-    expect(argNames).not.toContain("projectId")
-    expect(argNames).not.toContain("productId")
+    expect(argNames).toContain("showQuoteId")
+    expect(argNames).not.toContain("showId")
+    expect(argNames).not.toContain("propId")
   })
 
   it("should prefer same-namespace type over identically-named type in different namespace", () => {
-    // Reproduces: Craftsman::Graphql::MarkCraftsmanAvailableMutation declares
-    //   type ActivityType, null: false
+    // Reproduces: Juggler::Graphql::BookJugglerMutation declares
+    //   type PerformanceType, null: false
     // Ruby resolves unqualified names by looking in the enclosing namespace first.
-    // Craftsman::Graphql::ActivityType must win over Projects::Graphql::ActivityType.
+    // Juggler::Graphql::PerformanceType must win over BigShows::Graphql::PerformanceType.
 
-    const craftsmanActivityType = parseRubyTypeDefinition(
+    const jugglerPerformanceType = parseRubyTypeDefinition(
       `
-module Craftsman
+module Juggler
   module Graphql
-    class ActivityType < NitroGraphql::Types::BaseObject
-      graphql_name "CraftsmanActivity"
+    class PerformanceType < CircusApp::Types::BaseObject
+      graphql_name "JugglerPerformance"
       field :id, ID, null: false
       field :status, String
     end
   end
 end
 `,
-      "craftsman/graphql/activity_type.rb"
+      "juggler/graphql/performance_type.rb"
     )!
 
-    const projectsActivityType = parseRubyTypeDefinition(
+    const bigShowsPerformanceType = parseRubyTypeDefinition(
       `
-module Projects
+module BigShows
   module Graphql
-    class ActivityType < NitroGraphql::Types::BaseObject
+    class PerformanceType < CircusApp::Types::BaseObject
       field :icon, String, null: false
       field :color, String, null: false
     end
   end
 end
 `,
-      "projects/graphql/activity_type.rb"
+      "big_shows/graphql/performance_type.rb"
     )!
 
-    const craftsmanMutation = parseResolverDefinition(
+    const jugglerMutation = parseResolverDefinition(
       `
-module Craftsman
+module Juggler
   module Graphql
-    class MarkCraftsmanAvailableMutation < NitroGraphql::BaseQuery
-      type ActivityType, null: false
-      argument :activity_id, ID
-      def resolve(activity_id:); end
+    class BookJugglerMutation < CircusApp::BaseQuery
+      type PerformanceType, null: false
+      argument :act_id, ID
+      def resolve(act_id:); end
     end
   end
 end
 `,
-      "craftsman/graphql/mark_craftsman_available_mutation.rb"
+      "juggler/graphql/book_juggler_mutation.rb"
     )!
 
     // returnTypeRubyPath must be set to the namespace-qualified candidate
-    expect(craftsmanMutation.returnTypeRubyPath).toBe(
-      "Craftsman::Graphql::ActivityType"
+    expect(jugglerMutation.returnTypeRubyPath).toBe(
+      "Juggler::Graphql::PerformanceType"
     )
 
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "markCraftsmanAvailable",
-        resolverClassName: "Craftsman::Graphql::MarkCraftsmanAvailableMutation",
+        fieldName: "bookJuggler",
+        resolverClassName: "Juggler::Graphql::BookJugglerMutation",
         target: "mutation",
       },
     ]
 
     const schema = buildGraphQLSchema(
       [
-        craftsmanActivityType,
-        projectsActivityType,
+        jugglerPerformanceType,
+        bigShowsPerformanceType,
         parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query_type.rb")!,
       ],
-      [craftsmanMutation],
+      [jugglerMutation],
       registrations
     )
 
     const mutationType = schema.getMutationType()!
-    const field = mutationType.getFields()["markCraftsmanAvailable"]
+    const field = mutationType.getFields()["bookJuggler"]
     expect(field).toBeDefined()
 
     // Unwrap NonNull to get the base type
     let baseType: any = field.type
     while (baseType.ofType) baseType = baseType.ofType
 
-    // Must resolve to CraftsmanActivity, not Activity (Projects one)
-    expect(baseType.name).toBe("CraftsmanActivity")
+    // Must resolve to JugglerPerformance, not Performance (BigShows one)
+    expect(baseType.name).toBe("JugglerPerformance")
+  })
+
+  it("should extract component namespace from registration file for resolver disambiguation", () => {
+    // When a registration file is parsed, the component namespace is extracted
+    // from the outer module declaration and attached to each registration.
+    // This enables findResolver to prefer same-namespace resolvers when
+    // multiple components define resolvers with the same class name.
+    const content = `
+module TerritoryMaps
+  module Graphql
+    extend ::CircusApp::Schema::Partial
+
+    queries do
+      field :cd_reps, resolver: TeamsQuery
+      field :rc_reps, resolver: TeamsQuery
+    end
+  end
+end
+`
+    const registrations = parseRegistrationFile(content)
+    expect(registrations.length).toBe(2)
+
+    // All registrations from TerritoryMaps should have the component namespace
+    expect(registrations[0].componentNamespace).toBe("TerritoryMaps")
+    expect(registrations[1].componentNamespace).toBe("TerritoryMaps")
+
+    const cdReps = registrations.find(r => r.fieldName === "cdReps")
+    expect(cdReps).toBeDefined()
+    expect(cdReps!.componentNamespace).toBe("TerritoryMaps")
+    expect(cdReps!.resolverClassName).toBe("TeamsQuery") // unqualified
   })
 })
 
 describe("validateSchemaIntegrity", () => {
   it("should return empty array for valid schema", () => {
     const typeDefs = [
-      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "country.rb")!,
+      parseRubyTypeDefinition(COUNTRY_TYPE_FIXTURE, "tent.rb")!,
       parseRubyTypeDefinition(QUERY_TYPE_FIXTURE, "query.rb")!,
-      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "employee.rb")!,
-      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "audience.rb")!,
-      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "course.rb")!,
+      parseRubyTypeDefinition(ACCESS_TYPE_FIXTURE, "performer.rb")!,
+      parseRubyTypeDefinition(INTERFACE_TYPE_FIXTURE, "crowd.rb")!,
+      parseRubyTypeDefinition(COURSE_TYPE_FIXTURE, "act.rb")!,
     ]
     const schema = buildGraphQLSchema(typeDefs)
     const errors = validateSchemaIntegrity(schema)
@@ -2587,10 +2595,16 @@ describe("buildSchemaFromDirectory", () => {
     const gqlDir = path.join(tmpDir, "components", "test", "app", "graphql")
     fs.mkdirSync(gqlDir, { recursive: true })
     fs.writeFileSync(path.join(gqlDir, "query_type.rb"), QUERY_TYPE_FIXTURE)
-    fs.writeFileSync(path.join(gqlDir, "employee_type.rb"), ACCESS_TYPE_FIXTURE)
-    fs.writeFileSync(path.join(gqlDir, "country_type.rb"), COUNTRY_TYPE_FIXTURE)
-    fs.writeFileSync(path.join(gqlDir, "interface.rb"), INTERFACE_TYPE_FIXTURE)
-    fs.writeFileSync(path.join(gqlDir, "course_type.rb"), COURSE_TYPE_FIXTURE)
+    fs.writeFileSync(
+      path.join(gqlDir, "performer_type.rb"),
+      ACCESS_TYPE_FIXTURE
+    )
+    fs.writeFileSync(path.join(gqlDir, "tent_type.rb"), COUNTRY_TYPE_FIXTURE)
+    fs.writeFileSync(
+      path.join(gqlDir, "crowd_interface.rb"),
+      INTERFACE_TYPE_FIXTURE
+    )
+    fs.writeFileSync(path.join(gqlDir, "act_type.rb"), COURSE_TYPE_FIXTURE)
 
     const result = buildSchemaFromDirectory(tmpDir)
     expect(result.schema).toBeDefined()
@@ -2603,19 +2617,19 @@ describe("buildSchemaFromDirectory", () => {
     const gqlDir = path.join(
       tmpDir,
       "components",
-      "warranty",
+      "high_wire",
       "app",
       "graphql",
-      "warranty",
+      "high_wire",
       "graphql"
     )
     fs.mkdirSync(gqlDir, { recursive: true })
     fs.writeFileSync(
-      path.join(gqlDir, "agent_stats_type.rb"),
+      path.join(gqlDir, "clown_stats_type.rb"),
       AGENT_STATS_TYPE_FIXTURE
     )
     fs.writeFileSync(
-      path.join(gqlDir, "agent_stats_query.rb"),
+      path.join(gqlDir, "clown_stats_query.rb"),
       AGENT_STATS_QUERY_FIXTURE
     )
 
@@ -2623,9 +2637,9 @@ describe("buildSchemaFromDirectory", () => {
     const regDir = path.join(
       tmpDir,
       "components",
-      "warranty",
+      "high_wire",
       "lib",
-      "warranty"
+      "high_wire"
     )
     fs.mkdirSync(regDir, { recursive: true })
     fs.writeFileSync(path.join(regDir, "graphql.rb"), REGISTRATION_FILE_FIXTURE)
@@ -2637,7 +2651,7 @@ describe("buildSchemaFromDirectory", () => {
 
     const queryType = result.schema.getQueryType()!
     const fields = queryType.getFields()
-    expect(fields["agentStats"]).toBeDefined()
+    expect(fields["troupeStats"]).toBeDefined()
   })
 })
 
@@ -2645,13 +2659,13 @@ describe("buildSchemaFromDirectory", () => {
 
 describe("snakeToCamel", () => {
   it("should convert snake_case to camelCase", () => {
-    expect(snakeToCamel("agent_stats")).toBe("agentStats")
-    expect(snakeToCamel("available_routes")).toBe("availableRoutes")
-    expect(snakeToCamel("count_incoming_calls")).toBe("countIncomingCalls")
+    expect(snakeToCamel("troupe_stats")).toBe("troupeStats")
+    expect(snakeToCamel("show_routes")).toBe("showRoutes")
+    expect(snakeToCamel("count_guest_arrivals")).toBe("countGuestArrivals")
   })
 
   it("should leave already camelCase strings unchanged", () => {
-    expect(snakeToCamel("agentStats")).toBe("agentStats")
+    expect(snakeToCamel("troupeStats")).toBe("troupeStats")
     expect(snakeToCamel("id")).toBe("id")
   })
 
@@ -2660,8 +2674,8 @@ describe("snakeToCamel", () => {
   })
 
   it("should handle multiple underscores", () => {
-    expect(snakeToCamel("home_warranty_service_events_query")).toBe(
-      "homeWarrantyServiceEventsQuery"
+    expect(snakeToCamel("main_circus_show_events_query")).toBe(
+      "mainCircusShowEventsQuery"
     )
   })
 })
@@ -2670,11 +2684,11 @@ describe("parseResolverDefinition", () => {
   it("should parse a query resolver with arguments and return type", () => {
     const resolver = parseResolverDefinition(
       AGENT_STATS_QUERY_FIXTURE,
-      "agent_stats_query.rb"
+      "clown_stats_query.rb"
     )
     expect(resolver).not.toBeNull()
-    expect(resolver!.className).toBe("Warranty::Graphql::AgentStatsQuery")
-    expect(resolver!.returnType).toBe("AgentStats")
+    expect(resolver!.className).toBe("HighWire::Graphql::ClownStatsQuery")
+    expect(resolver!.returnType).toBe("ClownStats")
     expect(resolver!.returnTypeIsList).toBe(true)
     expect(resolver!.returnTypeNullable).toBe(false)
     expect(resolver!.arguments.length).toBe(3)
@@ -2683,12 +2697,12 @@ describe("parseResolverDefinition", () => {
   it("should parse argument names as camelCase", () => {
     const resolver = parseResolverDefinition(
       AGENT_STATS_QUERY_FIXTURE,
-      "agent_stats_query.rb"
+      "clown_stats_query.rb"
     )!
-    const agentIdsArg = resolver.arguments.find(a => a.name === "agentIds")
-    expect(agentIdsArg).toBeDefined()
-    expect(agentIdsArg!.isList).toBe(true)
-    expect(agentIdsArg!.type).toBe("ID")
+    const clownIdsArg = resolver.arguments.find(a => a.name === "clownIds")
+    expect(clownIdsArg).toBeDefined()
+    expect(clownIdsArg!.isList).toBe(true)
+    expect(clownIdsArg!.type).toBe("ID")
 
     const startDateArg = resolver.arguments.find(a => a.name === "startDate")
     expect(startDateArg).toBeDefined()
@@ -2722,35 +2736,33 @@ describe("parseResolverDefinition", () => {
   it("should parse a mutation resolver", () => {
     const resolver = parseResolverDefinition(
       CREATE_SERVICE_ORDER_MUTATION_FIXTURE,
-      "create_service_order_mutation.rb"
+      "book_show_equipment_mutation.rb"
     )!
     expect(resolver.className).toBe(
-      "Warranty::Graphql::CreateServiceOrderMutation"
+      "HighWire::Graphql::BookShowEquipmentMutation"
     )
-    expect(resolver.returnType).toBe("PurchaseOrder")
+    expect(resolver.returnType).toBe("PropOrder")
     expect(resolver.returnTypeIsList).toBe(true)
     expect(resolver.isConnectionType).toBe(false)
 
-    const projectIdArg = resolver.arguments.find(a => a.name === "projectId")
-    expect(projectIdArg).toBeDefined()
-    expect(projectIdArg!.type).toBe("ID")
-    expect(projectIdArg!.required).toBe(true)
+    const showIdArg = resolver.arguments.find(a => a.name === "showId")
+    expect(showIdArg).toBeDefined()
+    expect(showIdArg!.type).toBe("ID")
+    expect(showIdArg!.required).toBe(true)
 
-    const ticketNumberArg = resolver.arguments.find(
-      a => a.name === "ticketNumber"
-    )
-    expect(ticketNumberArg).toBeDefined()
-    expect(ticketNumberArg!.required).toBe(false)
+    const seatNumberArg = resolver.arguments.find(a => a.name === "seatNumber")
+    expect(seatNumberArg).toBeDefined()
+    expect(seatNumberArg!.required).toBe(false)
   })
 
   it("should parse a mutation with input type argument", () => {
     const resolver = parseResolverDefinition(
       CANCEL_SERVICE_APPOINTMENT_MUTATION_FIXTURE,
-      "cancel_mutation.rb"
+      "cancel_show_booking_mutation.rb"
     )!
     const attrsArg = resolver.arguments.find(a => a.name === "attributes")
     expect(attrsArg).toBeDefined()
-    expect(attrsArg!.type).toBe("ServiceAppointmentInput")
+    expect(attrsArg!.type).toBe("ShowBookingInput")
   })
 
   it("should parse a simple mutation with single ID argument", () => {
@@ -2765,10 +2777,7 @@ describe("parseResolverDefinition", () => {
   })
 
   it("should return null for non-resolver classes", () => {
-    const resolver = parseResolverDefinition(
-      COURSE_TYPE_FIXTURE,
-      "course_type.rb"
-    )
+    const resolver = parseResolverDefinition(COURSE_TYPE_FIXTURE, "act_type.rb")
     expect(resolver).toBeNull()
   })
 
@@ -2780,14 +2789,71 @@ describe("parseResolverDefinition", () => {
   it("should parse .connection_type syntax and set isConnectionType flag", () => {
     const resolver = parseResolverDefinition(
       TIME_OFF_BALANCE_CONNECTION_QUERY_FIXTURE,
-      "time_off_balance_query.rb"
+      "break_credit_query.rb"
     )!
     expect(resolver).not.toBeNull()
-    expect(resolver.returnType).toBe("TimeOffBalance")
+    expect(resolver.returnType).toBe("BreakCredit")
     expect(resolver.returnTypeIsList).toBe(false)
     expect(resolver.isConnectionType).toBe(true)
     expect(resolver.returnTypeNullable).toBe(false)
     expect(resolver.arguments.length).toBe(2)
+  })
+
+  it("should parse resolvers with intermediate base classes (e.g., Support::Graphql::TicketQuery)", () => {
+    const content = `
+      module ProjectSupportTickets
+        module Graphql
+          class TicketQuery < Support::Graphql::TicketQuery
+            description "Returns a Ticket for the given ticket ID"
+
+            type TicketType, null: false
+
+            argument :ticket_id, ID
+            def resolve(ticket_id:)
+              ticket = SupportTicketModel::Ticket.find(ticket_id)
+              ticket
+            end
+          end
+        end
+      end
+    `
+    const resolver = parseResolverDefinition(content, "ticket_query.rb")
+    expect(resolver).not.toBeNull()
+    expect(resolver!.className).toBe(
+      "ProjectSupportTickets::Graphql::TicketQuery"
+    )
+    expect(resolver!.returnType).toBe("Ticket")
+    expect(resolver!.returnTypeNullable).toBe(false)
+    expect(resolver!.arguments.length).toBe(1)
+    const ticketIdArg = resolver!.arguments.find(a => a.name === "ticketId")
+    expect(ticketIdArg).toBeDefined()
+    expect(ticketIdArg!.type).toBe("ID")
+    expect(ticketIdArg!.required).toBe(true)
+  })
+
+  it("should parse resolvers with intermediate base classes that end in Mutation", () => {
+    const content = `
+      module CustomFeature
+        module Graphql
+          class UpdateRecordMutation < Support::Graphql::BaseMutation
+            type String, null: false
+            argument :id, ID
+            def resolve(id:)
+              "success"
+            end
+          end
+        end
+      end
+    `
+    const resolver = parseResolverDefinition(
+      content,
+      "update_record_mutation.rb"
+    )
+    expect(resolver).not.toBeNull()
+    expect(resolver!.className).toBe(
+      "CustomFeature::Graphql::UpdateRecordMutation"
+    )
+    expect(resolver!.returnType).toBe("String")
   })
 })
 
@@ -2810,10 +2876,10 @@ describe("parseArguments", () => {
   })
 
   it("should parse argument with list type", () => {
-    const content = "argument :agent_ids, [ID]"
+    const content = "argument :clown_ids, [ID]"
     const args = parseArguments(content)
     expect(args.length).toBe(1)
-    expect(args[0].name).toBe("agentIds")
+    expect(args[0].name).toBe("clownIds")
     expect(args[0].isList).toBe(true)
     expect(args[0].type).toBe("ID")
   })
@@ -2829,24 +2895,24 @@ describe("parseArguments", () => {
 
   it("should parse multiple arguments", () => {
     const content = `
-      argument :project_id, ID
-      argument :ticket_number, String, required: false
-      argument :items, [Warranty::Graphql::ServiceOrderItemInputType]
+      argument :show_id, ID
+      argument :seat_number, String, required: false
+      argument :items, [HighWire::Graphql::ShowEquipmentItemInputType]
     `
     const args = parseArguments(content)
     expect(args.length).toBe(3)
-    expect(args[0].name).toBe("projectId")
-    expect(args[1].name).toBe("ticketNumber")
+    expect(args[0].name).toBe("showId")
+    expect(args[1].name).toBe("seatNumber")
     expect(args[2].name).toBe("items")
     expect(args[2].isList).toBe(true)
   })
 
   it("should parse argument with namespaced input type", () => {
     const content =
-      "argument :attributes, ::Warranty::Graphql::ServiceAppointmentInputType"
+      "argument :attributes, ::HighWire::Graphql::ShowBookingInputType"
     const args = parseArguments(content)
     expect(args.length).toBe(1)
-    expect(args[0].type).toBe("ServiceAppointmentInput")
+    expect(args[0].type).toBe("ShowBookingInput")
   })
 
   it("should parse multi-line argument definitions", () => {
@@ -2855,7 +2921,7 @@ describe("parseArguments", () => {
                required: false,
                default_value: false,
                description: "Set to true if you want excludeFromDirectory in your results."
-argument :search, NitroGraphql::Types::Json, required: false
+argument :search, CircusApp::Types::Json, required: false
 argument :through, String, required: false`
     const args = parseArguments(content)
     expect(args.length).toBe(3)
@@ -2907,39 +2973,39 @@ describe("parseRegistrationFile", () => {
       r => r.fieldName === "accessBeforeResolver"
     )
     expect(field).toBeDefined()
-    expect(field!.resolverClassName).toContain("AgentStatsQuery")
+    expect(field!.resolverClassName).toContain("ClownStatsQuery")
     expect(field!.target).toBe("query")
   })
 
   it("should convert field names to camelCase", () => {
     const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
-    const agentStats = registrations.find(r => r.fieldName === "agentStats")
-    expect(agentStats).toBeDefined()
-    expect(agentStats!.resolverClassName).toContain("AgentStatsQuery")
+    const troupeStats = registrations.find(r => r.fieldName === "troupeStats")
+    expect(troupeStats).toBeDefined()
+    expect(troupeStats!.resolverClassName).toContain("ClownStatsQuery")
 
-    const cancelAppt = registrations.find(
-      r => r.fieldName === "cancelServiceAppointment"
+    const cancelBooking = registrations.find(
+      r => r.fieldName === "cancelShowBooking"
     )
-    expect(cancelAppt).toBeDefined()
+    expect(cancelBooking).toBeDefined()
   })
 
   it("should extract correct resolver class names", () => {
     const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
-    const createOrder = registrations.find(
-      r => r.fieldName === "createServiceOrder"
+    const bookEquipment = registrations.find(
+      r => r.fieldName === "bookShowEquipment"
     )
-    expect(createOrder).toBeDefined()
-    expect(createOrder!.resolverClassName).toContain(
-      "CreateServiceOrderMutation"
+    expect(bookEquipment).toBeDefined()
+    expect(bookEquipment!.resolverClassName).toContain(
+      "BookShowEquipmentMutation"
     )
-    expect(createOrder!.target).toBe("mutation")
+    expect(bookEquipment!.target).toBe("mutation")
   })
 
   it("should return empty array for files with no registrations", () => {
     const registrations = parseRegistrationFile(`
 module Foo
   module Graphql
-    extend ::NitroGraphql::Schema::Partial
+    extend ::CircusApp::Schema::Partial
   end
 end
 `)
@@ -2950,7 +3016,7 @@ end
     const content = `
 module Foo
   module Graphql
-    extend ::NitroGraphql::Schema::Partial
+    extend ::CircusApp::Schema::Partial
 
     queries do
       field :my_query,
@@ -2969,7 +3035,7 @@ end
     const content = `
 module Foo
   module Graphql
-    extend ::NitroGraphql::Schema::Partial
+    extend ::CircusApp::Schema::Partial
 
     mutations do
       field :create_thing,
@@ -2988,7 +3054,7 @@ end
     const content = `
 module Foo
   module Graphql
-    extend ::NitroGraphql::Schema::Partial
+    extend ::CircusApp::Schema::Partial
 
     queries do
       field :my_query,
@@ -3012,11 +3078,48 @@ end
   })
 
   it("should default access to private when access uses complex hash form", () => {
-    // Complex permission hashes like { Project => :create } fall back to private
+    // Complex permission hashes like { Show => :create } fall back to private
     const registrations = parseRegistrationFile(REGISTRATION_FILE_FIXTURE)
-    const field = registrations.find(r => r.fieldName === "createServiceOrder")
+    const field = registrations.find(r => r.fieldName === "bookShowEquipment")
     expect(field).toBeDefined()
     expect(field!.access).toEqual(["private"])
+  })
+
+  it("should parse mutation: keyword as resolver in mutation fields", () => {
+    const content = `
+module HighWire
+  module Graphql
+    extend ::CircusApp::Schema::Partial
+
+    mutations do
+      field :upsert_acrobat_bonus_plan,
+            mutation: ::HighWire::Graphql::UpsertAcrobatBonusPlanMutation
+      field :delete_acrobat_benefit,
+            mutation: ::HighWire::Graphql::DeleteAcrobatBenefitMutation
+    end
+  end
+end
+`
+    const registrations = parseRegistrationFile(content)
+    expect(registrations.length).toBe(2)
+
+    const upsertBonus = registrations.find(
+      r => r.fieldName === "upsertAcrobatBonusPlan"
+    )
+    expect(upsertBonus).toBeDefined()
+    expect(upsertBonus!.resolverClassName).toBe(
+      "HighWire::Graphql::UpsertAcrobatBonusPlanMutation"
+    )
+    expect(upsertBonus!.target).toBe("mutation")
+
+    const deleteBonus = registrations.find(
+      r => r.fieldName === "deleteAcrobatBenefit"
+    )
+    expect(deleteBonus).toBeDefined()
+    expect(deleteBonus!.resolverClassName).toBe(
+      "HighWire::Graphql::DeleteAcrobatBenefitMutation"
+    )
+    expect(deleteBonus!.target).toBe("mutation")
   })
 })
 
@@ -3035,9 +3138,9 @@ describe("findRegistrationFiles", () => {
     const regDir = path.join(
       tmpDir,
       "components",
-      "warranty",
+      "high_wire",
       "lib",
-      "warranty"
+      "high_wire"
     )
     fs.mkdirSync(regDir, { recursive: true })
     fs.writeFileSync(path.join(regDir, "graphql.rb"), "# test")
@@ -3049,8 +3152,8 @@ describe("findRegistrationFiles", () => {
 
   it("should find multiple component registration files", () => {
     const dirs = [
-      path.join(tmpDir, "components", "warranty", "lib", "warranty"),
-      path.join(tmpDir, "components", "admin", "lib", "admin"),
+      path.join(tmpDir, "components", "high_wire", "lib", "high_wire"),
+      path.join(tmpDir, "components", "backstage", "lib", "backstage"),
     ]
     for (const dir of dirs) {
       fs.mkdirSync(dir, { recursive: true })
@@ -3071,7 +3174,7 @@ describe("findRegistrationFiles", () => {
 
 describe("parseMixinArguments", () => {
   const PAGINATION_MIXIN = `
-module NitroGraphql
+module CircusApp
   module PaginationArguments
     def self.included(cls)
       cls.class_eval do
@@ -3091,7 +3194,7 @@ end
   it("should parse arguments from a self.included mixin module", () => {
     const result = parseMixinArguments(PAGINATION_MIXIN)
     expect(result).not.toBeNull()
-    expect(result!.modulePath).toBe("NitroGraphql::PaginationArguments")
+    expect(result!.modulePath).toBe("CircusApp::PaginationArguments")
     expect(result!.arguments).toHaveLength(2)
 
     const names = result!.arguments.map(a => a.name)
@@ -3133,7 +3236,7 @@ describe("parseMixinRegistry", () => {
       [
         "pagination_arguments.rb",
         `
-module NitroGraphql
+module CircusApp
   module PaginationArguments
     def self.included(cls)
       cls.class_eval do
@@ -3150,9 +3253,9 @@ end
 
     const registry = parseMixinRegistry(files)
     expect(registry.size).toBe(1)
-    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
+    expect(registry.has("CircusApp::PaginationArguments")).toBe(true)
 
-    const args = registry.get("NitroGraphql::PaginationArguments")!
+    const args = registry.get("CircusApp::PaginationArguments")!
     expect(args.map(a => a.name)).toEqual(["page", "perPage"])
   })
 })
@@ -3169,14 +3272,14 @@ describe("loadMixinFiles", () => {
   })
 
   it("should find mixin files in lib/ directories that the graphql scanner misses", () => {
-    // Simulate: components/nitro_graphql/lib/nitro_graphql/pagination_arguments.rb
-    const libDir = path.join(tmpDir, "lib", "nitro_graphql")
+    // Simulate: components/circus_app/lib/circus_app/pagination_arguments.rb
+    const libDir = path.join(tmpDir, "lib", "circus_app")
     fs.mkdirSync(libDir, { recursive: true })
 
     fs.writeFileSync(
       path.join(libDir, "pagination_arguments.rb"),
       `
-module NitroGraphql
+module CircusApp
   module PaginationArguments
     def self.included(cls)
       cls.class_eval do
@@ -3193,7 +3296,7 @@ end
     fs.writeFileSync(
       path.join(libDir, "base_query.rb"),
       `
-module NitroGraphql
+module CircusApp
   class BaseQuery < GraphQL::Schema::Resolver
   end
 end
@@ -3206,7 +3309,7 @@ end
     fs.writeFileSync(
       path.join(graphqlDir, "some_type.rb"),
       `
-class SomeType < NitroGraphql::Types::BaseObject
+class SomeType < CircusApp::Types::BaseObject
   field :id, ID
 end
 `
@@ -3221,20 +3324,20 @@ end
 
     // The registry built from these files should include the mixin
     const registry = parseMixinRegistry(mixinFiles)
-    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
-    const args = registry.get("NitroGraphql::PaginationArguments")!
+    expect(registry.has("CircusApp::PaginationArguments")).toBe(true)
+    const args = registry.get("CircusApp::PaginationArguments")!
     expect(args.map(a => a.name)).toContain("page")
     expect(args.map(a => a.name)).toContain("perPage")
   })
 
   it("should find mixin files in nested lib subdirectory matching component layout", () => {
-    // Simulate: components/nitro_graphql/lib/nitro_graphql/concerns/pagination_arguments.rb
+    // Simulate: components/circus_app/lib/circus_app/concerns/pagination_arguments.rb
     const nestedLibDir = path.join(
       tmpDir,
       "components",
-      "nitro_graphql",
+      "circus_app",
       "lib",
-      "nitro_graphql",
+      "circus_app",
       "concerns"
     )
     fs.mkdirSync(nestedLibDir, { recursive: true })
@@ -3242,7 +3345,7 @@ end
     fs.writeFileSync(
       path.join(nestedLibDir, "pagination_arguments.rb"),
       `
-module NitroGraphql
+module CircusApp
   module PaginationArguments
     def self.included(cls)
       cls.class_eval do
@@ -3258,7 +3361,7 @@ end
     expect(mixinFiles.size).toBe(1)
 
     const registry = parseMixinRegistry(mixinFiles)
-    expect(registry.has("NitroGraphql::PaginationArguments")).toBe(true)
+    expect(registry.has("CircusApp::PaginationArguments")).toBe(true)
   })
 })
 
@@ -3269,6 +3372,7 @@ describe("parseResolverDefinition with mixin arguments", () => {
       type: "Int",
       required: false,
       isList: false,
+      listDepth: 0,
       defaultValue: "1",
     },
     {
@@ -3276,25 +3380,26 @@ describe("parseResolverDefinition with mixin arguments", () => {
       type: "Int",
       required: false,
       isList: false,
+      listDepth: 0,
       defaultValue: "100",
     },
   ]
 
   it("should merge arguments from included mixin modules", () => {
     const mixinRegistry = new Map([
-      ["NitroGraphql::PaginationArguments", PAGINATION_MIXIN_ARGS],
+      ["CircusApp::PaginationArguments", PAGINATION_MIXIN_ARGS],
     ])
 
     const resolver = parseResolverDefinition(
       `
-module Directory
+module BigTop
   module Graphql
-    class CommonPassphrasesQuery < NitroGraphql::BaseQuery
-      include NitroGraphql::PaginationArguments
+    class CircusCatchphrasesQuery < CircusApp::BaseQuery
+      include CircusApp::PaginationArguments
 
-      description "Library of common passphrases in Nitro."
+      description "Library of circus catchphrases."
 
-      type ::Directory::Graphql::CommonPassphraseResults, null: false
+      type ::BigTop::Graphql::CircusCatchphraseResults, null: false
 
       def resolve(per_page:, page:)
       end
@@ -3302,7 +3407,7 @@ module Directory
   end
 end
 `,
-      "directory/common_passphrases_query.rb",
+      "big_top/circus_catchphrases_query.rb",
       mixinRegistry
     )
 
@@ -3315,15 +3420,15 @@ end
 
   it("should not duplicate arguments already declared on the resolver", () => {
     const mixinRegistry = new Map([
-      ["NitroGraphql::PaginationArguments", PAGINATION_MIXIN_ARGS],
+      ["CircusApp::PaginationArguments", PAGINATION_MIXIN_ARGS],
     ])
 
     const resolver = parseResolverDefinition(
       `
 module Foo
   module Graphql
-    class MyQuery < NitroGraphql::BaseQuery
-      include NitroGraphql::PaginationArguments
+    class MyQuery < CircusApp::BaseQuery
+      include CircusApp::PaginationArguments
 
       type String, null: false
 
@@ -3348,7 +3453,7 @@ end
 
   it("should surface mixin arguments in the built schema", () => {
     const paginationMixin = `
-module NitroGraphql
+module CircusApp
   module PaginationArguments
     def self.included(cls)
       cls.class_eval do
@@ -3365,10 +3470,10 @@ end
 
     const resultsType = parseRubyTypeDefinition(
       `
-module Directory
+module BigTop
   module Graphql
-    class CommonPassphraseResults < NitroGraphql::Types::BaseObject
-      graphql_name "CommonPassphraseResults"
+    class CircusCatchphraseResults < CircusApp::Types::BaseObject
+      graphql_name "CircusCatchphraseResults"
       field :list, [String]
       field :page, Int
       field :per_page, Int
@@ -3376,31 +3481,31 @@ module Directory
   end
 end
 `,
-      "directory/common_passphrase_results.rb"
+      "big_top/circus_catchphrase_results.rb"
     )!
 
     const resolver = parseResolverDefinition(
       `
-module Directory
+module BigTop
   module Graphql
-    class CommonPassphrasesQuery < NitroGraphql::BaseQuery
-      include NitroGraphql::PaginationArguments
+    class CircusCatchphrasesQuery < CircusApp::BaseQuery
+      include CircusApp::PaginationArguments
 
-      type ::Directory::Graphql::CommonPassphraseResults, null: false
+      type ::BigTop::Graphql::CircusCatchphraseResults, null: false
 
       def resolve(per_page:, page:); end
     end
   end
 end
 `,
-      "directory/common_passphrases_query.rb",
+      "big_top/circus_catchphrases_query.rb",
       mixinRegistry
     )!
 
     const registrations: ResolverRegistration[] = [
       {
-        fieldName: "commonPassphrases",
-        resolverClassName: "Directory::Graphql::CommonPassphrasesQuery",
+        fieldName: "circusCatchphrases",
+        resolverClassName: "BigTop::Graphql::CircusCatchphrasesQuery",
         target: "query",
       },
     ]
@@ -3408,11 +3513,397 @@ end
     const schema = buildGraphQLSchema([resultsType], [resolver], registrations)
 
     const queryType = schema.getQueryType()!
-    const field = queryType.getFields()["commonPassphrases"]
+    const field = queryType.getFields()["circusCatchphrases"]
     expect(field).toBeDefined()
 
     const argNames = field.args.map((a: any) => a.name)
     expect(argNames).toContain("page")
     expect(argNames).toContain("perPage")
+  })
+})
+
+// ── Dynamic field block detection & resolution ─────────────────────────────────
+
+describe("detectDynamicFieldBlocks", () => {
+  it("detects a simple .each block with a bare variable field", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        field :id, ID
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].className).toBe("SomeAggregate")
+    expect(blocks[0].methodName).toBe("counter_columns")
+    expect(blocks[0].useKeys).toBe(false)
+    expect(blocks[0].blockVar).toBe("column")
+    expect(blocks[0].patterns).toHaveLength(1)
+    expect(blocks[0].patterns[0]).toEqual({ suffix: "", type: "Int" })
+  })
+
+  it("detects block with interpolated suffix field", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        SomeClass.fraction_columns.keys.each do |column|
+          field :"#{column}_percentage", Float
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].useKeys).toBe(true)
+    expect(blocks[0].patterns).toHaveLength(1)
+    expect(blocks[0].patterns[0]).toEqual({
+      suffix: "_percentage",
+      type: "Float",
+    })
+  })
+
+  it("detects multiple field patterns in one block", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+          define_method(column) do
+            object[column]
+          end
+          field :"#{column}_average", Float
+          define_method(:"#{column}_average") do
+            object[:"#{column}_average"]
+          end
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].patterns).toHaveLength(2)
+    const suffixes = blocks[0].patterns.map(p => p.suffix)
+    expect(suffixes).toContain("")
+    expect(suffixes).toContain("_average")
+    const types = blocks[0].patterns.map(p => p.type)
+    expect(types).toContain("Int")
+    expect(types).toContain("Float")
+  })
+
+  it("detects multiple .each blocks in one class", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        TroupeStats.counter_columns.each do |column|
+          field column, Integer
+        end
+        TroupeStats::Show.ratio_columns.keys.each do |column|
+          field :"#{column}_percentage", Float
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0].methodName).toBe("counter_columns")
+    expect(blocks[0].useKeys).toBe(false)
+    expect(blocks[1].methodName).toBe("ratio_columns")
+    expect(blocks[1].useKeys).toBe(true)
+  })
+
+  it("is attached to the type definition via parseRubyTypeDefinition", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        field :id, ID
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(content, "row_type.rb")!
+    expect(typeDef).toBeDefined()
+    expect(typeDef.dynamicFieldBlocks).toBeDefined()
+    expect(typeDef.dynamicFieldBlocks).toHaveLength(1)
+    // Static fields still present
+    expect(typeDef.fields.find(f => f.name === "id")).toBeDefined()
+  })
+
+  it("detects inline symbol array with .each", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        %i[acts opening_bookings closing_bookings].each do |column|
+          field column, Int
+          field :"#{column}_projection", Float
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].inlineValues).toEqual([
+      "acts",
+      "opening_bookings",
+      "closing_bookings",
+    ])
+    expect(blocks[0].className).toBeUndefined()
+    expect(blocks[0].methodName).toBeUndefined()
+    expect(blocks[0].patterns).toHaveLength(2)
+  })
+
+  it("detects multiple inline arrays and method calls mixed", () => {
+    const content = `
+      class RowType < CircusApp::Types::BaseObject
+        %i[field1 field2].each do |col|
+          field col, String
+        end
+        SomeClass.method_name.each do |col|
+          field col, Integer
+        end
+      end
+    `
+    const blocks = detectDynamicFieldBlocks(content)
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0].inlineValues).toEqual(["field1", "field2"])
+    expect(blocks[1].className).toBe("SomeClass")
+    expect(blocks[1].methodName).toBe("method_name")
+  })
+})
+
+describe("resolveDynamicFields", () => {
+  it("resolves fields from %i[...] symbol array in same-file content", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        field :id, ID
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+        end
+      end
+
+      class SomeAggregate
+        def self.counter_columns
+          %i[
+            tents_visited
+            ringmasters_met
+            intel_gathered
+          ]
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    const files = new Map([["row_type.rb", typeContent]])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    expect(fieldNames).toContain("tentsVisited")
+    expect(fieldNames).toContain("ringmastersMet")
+    expect(fieldNames).toContain("intelGathered")
+
+    const tentsField = typeDef.fields.find(f => f.name === "tentsVisited")!
+    expect(tentsField.type).toBe("Int")
+  })
+
+  it("resolves fields with suffix from hash keys in same-file content", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        TroupeStats::Show.ratio_columns.keys.each do |column|
+          field :"#{column}_percentage", Float
+        end
+      end
+
+      class TroupeStats
+        class Show
+          def self.ratio_columns
+            {
+              ringmasters_met: :tents_visited,
+              intel_gathered: :ringmasters_met,
+              bookings_made: :ringmasters_met,
+            }
+          end
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    const files = new Map([["row_type.rb", typeContent]])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    expect(fieldNames).toContain("ringmastersMetPercentage")
+    expect(fieldNames).toContain("intelGatheredPercentage")
+    expect(fieldNames).toContain("bookingsMadePercentage")
+
+    const pct = typeDef.fields.find(f => f.name === "ringmastersMetPercentage")!
+    expect(pct.type).toBe("Float")
+  })
+
+  it("resolves fields from multiple patterns in the same block", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+          define_method(column) do
+            object[column]
+          end
+          field :"#{column}_average", Float
+          define_method(:"#{column}_average") do
+            object[:"#{column}_average"]
+          end
+        end
+      end
+
+      class SomeAggregate
+        def self.counter_columns
+          %i[tents_visited ringmasters_met]
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    const files = new Map([["row_type.rb", typeContent]])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    // Integer fields (no suffix)
+    expect(fieldNames).toContain("tentsVisited")
+    expect(fieldNames).toContain("ringmastersMet")
+    // Float fields with _average suffix
+    expect(fieldNames).toContain("tentsVisitedAverage")
+    expect(fieldNames).toContain("ringmastersMetAverage")
+
+    expect(typeDef.fields.find(f => f.name === "tentsVisited")?.type).toBe(
+      "Int"
+    )
+    expect(
+      typeDef.fields.find(f => f.name === "tentsVisitedAverage")?.type
+    ).toBe("Float")
+  })
+
+  it("resolves fields from a separate file in the provided files map", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        OutsideRecord.show_data.each do |col|
+          field col, Integer
+        end
+      end
+    `
+    const modelContent = `
+      class OutsideRecord
+        def self.show_data
+          %i[auditions applause enrollments]
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    // Both files in the map — simulates them being loaded together
+    const files = new Map([
+      ["row_type.rb", typeContent],
+      ["outside_record.rb", modelContent],
+    ])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    expect(fieldNames).toContain("auditions")
+    expect(fieldNames).toContain("applause")
+    expect(fieldNames).toContain("enrollments")
+  })
+
+  it("does not duplicate fields that are already declared statically", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        field :tents_visited, Integer
+        SomeAggregate.counter_columns.each do |column|
+          field column, Integer
+        end
+      end
+
+      class SomeAggregate
+        def self.counter_columns
+          %i[tents_visited ringmasters_met]
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    const files = new Map([["row_type.rb", typeContent]])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const tentsFields = typeDef.fields.filter(f => f.name === "tentsVisited")
+    expect(tentsFields).toHaveLength(1) // Not duplicated
+    expect(typeDef.fields.find(f => f.name === "ringmastersMet")).toBeDefined()
+  })
+
+  it("resolves nested class methods from hash keys with suffix (cross-file scenario)", () => {
+    const typeContent = `
+      class TroupeMetricsRowType < CircusApp::Types::BaseObject
+        field :id, ID
+        AudienceGrowthTroupeStatsAggregate::Row.ratio_columns.keys.each do |column|
+          field :"#{column}_percentage", Float
+          define_method(:"#{column}_percentage") do
+            object[:"#{column}_percentage"]
+          end
+        end
+      end
+    `
+    const modelContent = `
+      class AudienceGrowthTroupeStatsAggregate < ApplicationRecord
+        class Row
+          def self.ratio_columns
+            {
+              ringmasters_met: :tents_visited,
+              intel_gathered: :ringmasters_met,
+              easy_crowds: :ringmasters_met,
+              bookings_made: :ringmasters_met,
+            }
+          end
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(
+      typeContent,
+      "troupe_metrics_row_type.rb"
+    )!
+    const files = new Map([
+      ["troupe_metrics_row_type.rb", typeContent],
+      ["audience_growth_troupe_stats_aggregate.rb", modelContent],
+    ])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    expect(fieldNames).toContain("ringmastersMetPercentage")
+    expect(fieldNames).toContain("intelGatheredPercentage")
+    expect(fieldNames).toContain("easyCrowdsPercentage")
+    expect(fieldNames).toContain("bookingsMadePercentage")
+
+    // Verify they're Float type with _percentage suffix
+    const decisionField = typeDef.fields.find(
+      f => f.name === "ringmastersMetPercentage"
+    )!
+    expect(decisionField.type).toBe("Float")
+  })
+
+  it("resolves inline symbol array with suffix pattern", () => {
+    const typeContent = `
+      class RowType < CircusApp::Types::BaseObject
+        %i[acts opening_bookings closing_bookings previews].each do |column|
+          field column.to_sym, Int
+          field :"#{column}_projection", Float
+        end
+      end
+    `
+    const typeDef = parseRubyTypeDefinition(typeContent, "row_type.rb")!
+    const files = new Map([["row_type.rb", typeContent]])
+    resolveDynamicFields([typeDef], files, "/tmp")
+
+    const fieldNames = typeDef.fields.map(f => f.name)
+    // Base fields (bare column names)
+    expect(fieldNames).toContain("acts")
+    expect(fieldNames).toContain("openingBookings")
+    expect(fieldNames).toContain("closingBookings")
+    expect(fieldNames).toContain("previews")
+    // Projection fields (with _projection suffix)
+    expect(fieldNames).toContain("actsProjection")
+    expect(fieldNames).toContain("openingBookingsProjection")
+    expect(fieldNames).toContain("closingBookingsProjection")
+    expect(fieldNames).toContain("previewsProjection")
+
+    // Verify types
+    const actsField = typeDef.fields.find(f => f.name === "acts")!
+    expect(actsField.type).toBe("Int")
+    const actsProjectionField = typeDef.fields.find(
+      f => f.name === "actsProjection"
+    )!
+    expect(actsProjectionField.type).toBe("Float")
   })
 })

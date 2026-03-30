@@ -8,25 +8,25 @@ import { CacheManager } from "../src/cache/cacheManager"
 
 const TEST_SCHEMA_SDL = `
   type Query {
-    projectTask(id: ID!): ProjectTask
+    circusAct(id: ID!): CircusAct
     user(id: ID!): User
-    project(id: ID!): Project
+    show(id: ID!): Show
   }
-  type ProjectTask {
+  type CircusAct {
     id: ID!
-    canBeEdited: Boolean
-    canChangeDuration: Boolean
-    estimatedCompletionAt: String
-    task: Task
-    scheduledDate: String
-    installer: Installer
-    product: Product
-    project: Project
+    canBeRescheduled: Boolean
+    canChangeTiming: Boolean
+    estimatedCurtainAt: String
+    routine: Routine
+    scheduledFor: String
+    rigger: Rigger
+    prop: Prop
+    show: Show
   }
-  type Task { id: ID!, code: String }
-  type Installer { id: ID!, crewName: String }
-  type Product { id: ID!, code: String }
-  type Project { id: ID!, projectNumber: String, name: String, status: String, tasks: [ProjectTask] }
+  type Routine { id: ID!, code: String }
+  type Rigger { id: ID!, troupeName: String }
+  type Prop { id: ID!, code: String }
+  type Show { id: ID!, showNumber: String, name: String, status: String, acts: [CircusAct] }
   type User { id: ID!, name: String, email: String }
 `
 
@@ -40,17 +40,17 @@ describe("Performance", () => {
   it("should validate a typical query in <100ms", () => {
     const source = `
 const Q = gql\`
-  query projectTask($projectTaskId: ID!) {
-    projectTask(id: $projectTaskId) {
+  query circusAct($actId: ID!) {
+    circusAct(id: $actId) {
       id
-      canBeEdited
-      canChangeDuration
-      estimatedCompletionAt
-      task { id code }
-      scheduledDate
-      installer { id crewName }
-      product { id code }
-      project { id projectNumber }
+      canBeRescheduled
+      canChangeTiming
+      estimatedCurtainAt
+      routine { id code }
+      scheduledFor
+      rigger { id troupeName }
+      prop { id code }
+      show { id showNumber }
     }
   }
 \`
@@ -103,8 +103,8 @@ const Q = gql\`
     const cache = new CacheManager(100)
     const source = `
 const Q = gql\`
-  query projectTask($id: ID!) {
-    projectTask(id: $id) { id canBeEdited }
+  query circusAct($id: ID!) {
+    circusAct(id: $id) { id canBeRescheduled }
   }
 \`
 `
@@ -129,8 +129,8 @@ const Q = gql\`
     const cache = new CacheManager(200)
     const source = `
 const Q = gql\`
-  query projectTask($id: ID!) {
-    projectTask(id: $id) { id canBeEdited }
+  query circusAct($id: ID!) {
+    circusAct(id: $id) { id canBeRescheduled }
   }
 \`
 `

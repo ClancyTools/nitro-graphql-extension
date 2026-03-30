@@ -88,6 +88,42 @@ export function lineColToOffset(
 }
 
 /**
+ * Check if this is a bare selection set (fragment) rather than a complete query.
+ * Examples: `{ id name }` or `{ ... on Type { field } }`
+ * These are typically used as reusable fragments/selectors and don't have context
+ * for hover information, so we skip providing hover for them.
+ */
+function isBareSelectionSet(
+  document: ReturnType<typeof parse>,
+  originalQueryText: string
+): boolean {
+  // Check if document has exactly one definition and it's an unnamed query operation
+  if (document.definitions.length !== 1) {
+    return false
+  }
+
+  const def = document.definitions[0]
+
+  // Check if it's an OperationDefinition (not a FragmentDefinition)
+  if (def.kind !== "OperationDefinition") {
+    return false
+  }
+
+  // Check if the original text starts with an operation keyword (query/mutation/subscription)
+  // If it does, it's an explicit operation, not a bare selection set
+  const trimmed = originalQueryText.trim()
+  if (/^(query|mutation|subscription|fragment)\b/.test(trimmed)) {
+    return false
+  }
+
+  // It's a bare selection set if:
+  // - It has no operation name (unnamed query or bare {})
+  // - The operation type is "query" (default)
+  // - It has no variable definitions
+  return def.name === undefined && def.variableDefinitions?.length === 0
+}
+
+/**
  * Walk the parsed query AST using graphql's TypeInfo to find the field at
  * the given character offset and build hover documentation for it.
  */
@@ -100,6 +136,11 @@ export function buildHoverContent(
   try {
     doc = parse(query)
   } catch {
+    return null
+  }
+
+  // Skip hover for bare selection sets (reusable fragments without operation context)
+  if (isBareSelectionSet(doc, query)) {
     return null
   }
 

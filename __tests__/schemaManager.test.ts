@@ -8,19 +8,19 @@ import { CacheManager } from "../src/cache/cacheManager"
 // ── Fixtures for local schema building ──
 
 const QUERY_TYPE_FIXTURE = `
-module NitroGraphql
-  class QueryType < NitroGraphql::Types::BaseObject
+module CircusApp
+  class QueryType < CircusApp::Types::BaseObject
     graphql_name "Queries"
-    field :user, ::Directory::Graphql::EmployeeType, null: true
+    field :performer, ::BigTop::Graphql::PerformerType, null: true
   end
 end
 `
 
-const EMPLOYEE_TYPE_FIXTURE = `
-module Directory
+const PERFORMER_TYPE_FIXTURE = `
+module BigTop
   module Graphql
-    class EmployeeType < NitroGraphql::Types::BaseObject
-      graphql_name "Employee"
+    class PerformerType < CircusApp::Types::BaseObject
+      graphql_name "Performer"
       field :id, ID, null: false
       field :name, String, null: false
     end
@@ -32,7 +32,10 @@ function createTestFixtures(tmpDir: string): void {
   const gqlDir = path.join(tmpDir, "components", "test", "app", "graphql")
   fs.mkdirSync(gqlDir, { recursive: true })
   fs.writeFileSync(path.join(gqlDir, "query_type.rb"), QUERY_TYPE_FIXTURE)
-  fs.writeFileSync(path.join(gqlDir, "employee_type.rb"), EMPLOYEE_TYPE_FIXTURE)
+  fs.writeFileSync(
+    path.join(gqlDir, "performer_type.rb"),
+    PERFORMER_TYPE_FIXTURE
+  )
 }
 
 describe("SchemaManager", () => {

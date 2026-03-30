@@ -34,6 +34,8 @@ export interface FieldDefinition {
   type: string
   nullable: boolean
   isList: boolean
+  /** Nesting depth for lists; e.g. [[Type]] has listDepth=2, [Type] has listDepth=1, Type has listDepth=0 */
+  listDepth: number
   access: AccessLevel
   /** Arguments declared inline on this field inside a `do...end` block */
   fieldArgs?: ArgumentDefinition[]
@@ -49,6 +51,9 @@ export interface FieldDefinition {
   /** When true (or omitted), field name is camelCased. When false, kept as-is.
    * E.g. `field :new_appts_plan, String, camelize: false` → "new_appts_plan" instead of "newApptsPlan" */
   camelize?: boolean
+  /** When true, this field uses .connection_type for Relay pagination (e.g., MyType.connection_type).
+   * Indicates the field should be wrapped in a connection type with first/last/before/after args. */
+  isConnectionType?: boolean
 }
 
 export interface ArgumentDefinition {
@@ -59,16 +64,23 @@ export interface ArgumentDefinition {
   typeRubyPath?: string
   required: boolean
   isList: boolean
+  /** Nesting depth for lists; e.g. [[String]] has listDepth=2, [String] has listDepth=1, String has listDepth=0 */
+  listDepth: number
   defaultValue?: string
 }
 
 export interface ResolverDefinition {
   className: string
+  /** Full Ruby parent class name (leading :: stripped), e.g. "EmployeeReviews::Graphql::UpdateReviewMutationBase".
+   * Used by resolveResolverInheritance to walk the parent chain and merge arguments. */
+  parentClass: string
   returnType: string
   /** Full Ruby path of the return type, e.g. "BrandHeadlines::Graphql::CalendarEventType".
    * Preserved when the resolver declares a namespaced type, for unambiguous resolution. */
   returnTypeRubyPath?: string
   returnTypeIsList: boolean
+  /** Nesting depth for lists; e.g. [[Type]] has returnTypeListDepth=2, [Type] has returnTypeListDepth=1 */
+  returnTypeListDepth: number
   /** True only when the resolver uses `Type.connection_type` syntax — triggers Relay Connection wrapping */
   isConnectionType: boolean
   returnTypeNullable: boolean
@@ -84,6 +96,50 @@ export interface ResolverRegistration {
   target: "query" | "mutation"
   /** Access level parsed from the registration field declaration (e.g. ["private"]) */
   access?: AccessLevel
+  /** Component namespace where this resolver was registered (e.g. "TerritoryMaps").
+   * Used to prefer same-namespace resolvers when resolver class name is unqualified. */
+  componentNamespace?: string
+}
+
+/**
+ * A single field pattern inside a dynamic `.each` block.
+ * e.g. for `field :"#{column}_average", Float` → { suffix: "_average", type: "Float" }
+ * or   `field column, Integer`                  → { suffix: "",          type: "Int"   }
+ */
+export interface DynamicFieldPattern {
+  /** Suffix appended to each field name; empty for bare variable use */
+  suffix: string
+  /** Resolved GraphQL type name (e.g. "Int", "Float", "String") */
+  type: string
+}
+
+/**
+ * Describes a dynamic `.each` block found in a Type definition like:
+ *   SomeClass.method_name.each do |col|
+ *     field col, Integer
+ *     field :"#{col}_average", Float
+ *   end
+ * Or inline:
+ *   %i[field1 field2].each do |col|
+ *     field col, Integer
+ *   end
+ *
+ * For cross-file resolution (ClassName.method), className/methodName are set.
+ * For inline arrays (%i[...]), inlineValues are set instead.
+ */
+export interface DynamicFieldBlock {
+  /** Class on which the method is called (when not inline) */
+  className?: string
+  /** Method name (when not inline), e.g. "counter_columns" */
+  methodName?: string
+  /** True when `.keys.each` is used — means the method returns a hash and we want its keys */
+  useKeys: boolean
+  /** The block variable name, e.g. "column" */
+  blockVar: string
+  /** All field patterns found inside the block */
+  patterns: DynamicFieldPattern[]
+  /** For inline arrays like %i[...], the field names are directly available */
+  inlineValues?: string[]
 }
 
 export interface GraphQLTypeDefinition {
@@ -95,14 +151,19 @@ export interface GraphQLTypeDefinition {
   fields: FieldDefinition[]
   implements: string[]
   enumValues: string[]
-  /** Populated for union types — the list of member type names */
+  /** Populated for union types — the list of member type names (short names only) */
   possibleTypes?: string[]
+  /** Populated for union types — full Ruby paths for each possible type (e.g., "Module::Namespace::TypeName").
+   * Enables disambiguation when multiple types share the same short name in different namespaces. */
+  possibleTypesRubyPaths?: string[]
   fileName: string
   /** Type description */
   description?: string
   /** Full Ruby class path including modules, e.g. "BrandHeadlines::Graphql::CalendarEventType".
    * Used to disambiguate types with the same classBasedName in different namespaces. */
   rubyPath?: string
+  /** Dynamic fields sourced from `.each` blocks — resolved separately at schema-build time */
+  dynamicFieldBlocks?: DynamicFieldBlock[]
 }
 
 // ── File Discovery ─────────────────────────────────────────────────────────────
@@ -197,8 +258,13 @@ function loadRbFilesRecursive(dir: string, files: Map<string, string>): void {
       try {
         const content = fs.readFileSync(fullPath, "utf-8")
         files.set(fullPath, content)
-      } catch {
-        logger.warn(`[NitroGraphQL] Failed to read file: ${fullPath}`)
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        logger.warn(
+          `[NitroGraphQL] ⚠️  Failed to read file: ${fullPath}\\n` +
+            `    Reason: ${errorMsg}\\n` +
+            `    💡 Check file permissions and that the file exists`
+        )
       }
     }
   }
@@ -266,6 +332,33 @@ export function loadMixinFiles(basePath: string): Map<string, string> {
 // ── Ruby Parsing ───────────────────────────────────────────────────────────────
 
 /**
+ * Detect if a file is likely JavaScript/TypeScript based on common markers.
+ * Used to skip non-Ruby files that might be in graphql directories.
+ */
+function isJavaScriptFile(content: string): boolean {
+  const lines = content.split("\n").slice(0, 20) // Check first 20 lines
+  const jsMarkers = [
+    /^\s*import\s+.*from\s+["'`]/,
+    /^\s*export\s+(const|function|class|interface|type)/,
+    /^\s*(const|let|var)\s+\w+\s*[:=]/,
+    /^\s*function\s+\w+\s*\(/,
+  ]
+
+  let jsLineCount = 0
+  for (const line of lines) {
+    for (const marker of jsMarkers) {
+      if (marker.test(line)) {
+        jsLineCount++
+        break
+      }
+    }
+  }
+
+  // If we find 2+ JS markers, it's probably not a Ruby file
+  return jsLineCount >= 2
+}
+
+/**
  * Parse a Ruby GraphQL type definition file into a structured definition.
  * Returns null for resolver classes (use parseResolverDefinition instead).
  */
@@ -273,28 +366,51 @@ export function parseRubyTypeDefinition(
   fileContent: string,
   fileName: string
 ): GraphQLTypeDefinition | null {
+  // Skip non-Ruby files (e.g., TypeScript/JavaScript)
+  if (isJavaScriptFile(fileContent)) {
+    return null
+  }
+
   // Remove Ruby comments (lines starting with #)
   const lines = fileContent.split("\n")
   const contentLines = lines.filter(l => !l.trim().startsWith("#"))
   const content = contentLines.join("\n")
 
   // --- Path 1: class-based definition (class Foo < Bar) ---
-  const classMatch = content.match(/class\s+(\w+)\s*<\s*([\w:]+)/)
+  // Extract all class definitions and find the first valid type (skip resolvers)
+  const classRegex = /class\s+(\w+)\s*<\s*([\w:]+)/g
+  let classMatch: RegExpExecArray | null
+  let typeClassName: string = ""
+  let typeParentClass: string = ""
+  let typeKind: GraphQLTypeDefinition["kind"] | null = null
+  let foundTypeClass = false
 
-  if (classMatch) {
+  while ((classMatch = classRegex.exec(content)) !== null) {
     const className = classMatch[1]
     const parentClass = classMatch[2]
 
-    // Check if this is a resolver class — handled separately
-    if (isResolverClass(parentClass)) {
-      return null
+    // Check if this is a resolver class — skip it
+    if (isResolverClass(parentClass, className)) {
+      continue
     }
 
     // Determine kind from parent class
     const kind = inferKind(parentClass)
     if (!kind) {
-      return null
+      continue
     }
+
+    typeClassName = className
+    typeParentClass = parentClass
+    typeKind = kind
+    foundTypeClass = true
+    break
+  }
+
+  if (foundTypeClass) {
+    const className = typeClassName
+    const parentClass = typeParentClass
+    const kind = typeKind!
 
     // Extract graphql_name if present, otherwise derive from class name
     const graphqlNameMatch = content.match(/graphql_name\s+["'](\w+)["']/)
@@ -304,6 +420,21 @@ export function parseRubyTypeDefinition(
     // Union types: parse possible_types members, no fields
     if (kind === "union") {
       const description = extractDescription(content)
+      // Build full Ruby path for namespace-aware disambiguation (same as other types)
+      const rubyModules: string[] = []
+      const rubyModuleRegex = /module\s+(\w+)/g
+      let rubyModMatch: RegExpExecArray | null
+      while ((rubyModMatch = rubyModuleRegex.exec(content)) !== null) {
+        rubyModules.push(rubyModMatch[1])
+      }
+      const rubyPath = [...rubyModules, className].join("::")
+      const modulePath = rubyModules.join("::")
+
+      // Parse possible types with both short and full paths in one call
+      const possibleTypeEntries = parsePossibleTypes(content, modulePath)
+      const possibleTypes = possibleTypeEntries.map(t => t.short)
+      const possibleTypesRubyPaths = possibleTypeEntries.map(t => t.full)
+
       return {
         name,
         classBasedName,
@@ -312,9 +443,11 @@ export function parseRubyTypeDefinition(
         fields: [],
         implements: [],
         enumValues: [],
-        possibleTypes: parsePossibleTypes(content),
+        possibleTypes,
+        possibleTypesRubyPaths,
         fileName,
         description,
+        rubyPath,
       }
     }
 
@@ -341,6 +474,7 @@ export function parseRubyTypeDefinition(
 
     const fields = parseFields(content, kind)
     const description = extractDescription(content)
+    const dynamicFieldBlocks = detectDynamicFieldBlocks(content)
 
     // Build full Ruby path for namespace-aware disambiguation.
     // Extract module declarations in order of appearance.
@@ -363,6 +497,8 @@ export function parseRubyTypeDefinition(
       fileName,
       description,
       rubyPath,
+      dynamicFieldBlocks:
+        dynamicFieldBlocks.length > 0 ? dynamicFieldBlocks : undefined,
     }
   }
 
@@ -414,17 +550,35 @@ export function parseRubyTypeDefinition(
 }
 
 /**
- * Check if the parent class indicates a resolver (BaseQuery / Resolver).
+ * Check if the parent class indicates a resolver (BaseQuery / Resolver / TicketQuery).
+ * Also checks the class name itself as a fallback for intermediate base classes.
  */
-function isResolverClass(parentClass: string): boolean {
+function isResolverClass(
+  parentClass: string,
+  childClassName?: string
+): boolean {
   const lower = parentClass.toLowerCase()
-  return (
+  const parentMatches =
     lower.includes("basequery") ||
     lower.includes("base_query") ||
     lower.includes("resolver") ||
     lower.includes("basemutation") ||
-    lower.includes("base_mutation")
-  )
+    lower.includes("base_mutation") ||
+    // Catch intermediate mutation base classes such as UpdateReviewMutationBase
+    // where "mutation" appears in the name but not as the "BaseMutation" prefix.
+    lower.includes("mutation") ||
+    // Catch intermediate query base classes like Support::Graphql::TicketQuery
+    // when "query" appears anywhere in the parent class name
+    lower.includes("query")
+
+  // If parent class doesn't match but we have a child class name, check if
+  // the child ends with Query or Mutation (strong indicator of resolver)
+  if (!parentMatches && childClassName) {
+    const childLower = childClassName.toLowerCase()
+    return childLower.endsWith("query") || childLower.endsWith("mutation")
+  }
+
+  return parentMatches
 }
 
 /**
@@ -469,31 +623,64 @@ function inferKind(parentClass: string): GraphQLTypeDefinition["kind"] | null {
 /**
  * Parse the possible_types list from a Ruby union class body.
  * Handles both single-line: `possible_types TypeA, TypeB`
- * and multi-line: `possible_types(\n  TypeA,\n  TypeB\n)`
+ * and multi-line: `possible_types(\n  TypeA,\n  TypeB\n)` or without parens
  */
-function parsePossibleTypes(content: string): string[] {
+function parsePossibleTypes(
+  content: string,
+  currentModulePath?: string
+): { short: string; full: string }[] {
   // With parens (possibly multiline): possible_types(TypeA, TypeB)
   const parenMatch = content.match(/\bpossible_types\s*\(([\s\S]*?)\)/)
   if (parenMatch) {
-    return extractRubyTypeNames(parenMatch[1])
+    return extractRubyTypeNames(parenMatch[1], currentModulePath)
   }
-  // Without parens on a single line: possible_types TypeA, TypeB
-  const inlineMatch = content.match(/\bpossible_types\s+([^\n]+)/)
+
+  // Without parens: possible_types TypeA, TypeB (may span multiple lines if lines end with comma)
+  // Match from possible_types keyword to indented lines that continue the list until we hit class/def
+  const inlineMatch = content.match(
+    /\bpossible_types\s+([\s\S]*?)(?=\n\s*(?:def|class|module|field|#|end|\Z))/
+  )
   if (inlineMatch) {
-    return extractRubyTypeNames(inlineMatch[1])
+    return extractRubyTypeNames(inlineMatch[1], currentModulePath)
   }
   return []
 }
 
-function extractRubyTypeNames(raw: string): string[] {
+/**
+ * Extract Ruby type names from possible_types declaration.
+ * Returns array of { short: "TypeName", full: "Module::Namespace::TypeName" } objects.
+ * If fully qualified paths are present (with ::), uses them.
+ * Otherwise, assumes they're in the current module/namespace.
+ */
+function extractRubyTypeNames(
+  raw: string,
+  currentModulePath?: string
+): { short: string; full: string }[] {
   return raw
     .split(",")
     .map(t => {
-      const parts = t.replace(/[()]/g, "").trim().split("::")
-      const last = parts[parts.length - 1].trim()
-      return last ? deriveTypeName(last) : ""
+      const trimmed = t.replace(/[()]/g, "").trim()
+      if (!trimmed) return null
+
+      const parts = trimmed
+        .split("::")
+        .map(p => p.trim())
+        .filter(Boolean)
+      const last = parts[parts.length - 1]
+      const shortName = deriveTypeName(last)
+
+      // If fully qualified (starts with :: or has multiple parts), use as-is
+      // Otherwise, prepend current module path
+      const fullPath =
+        trimmed.startsWith("::") || parts.length > 1
+          ? parts.join("::") // Use the qualified path
+          : currentModulePath
+            ? `${currentModulePath}::${last}`
+            : last // Fallback to just the class name
+
+      return { short: shortName, full: fullPath }
     })
-    .filter(Boolean)
+    .filter((x): x is { short: string; full: string } => x !== null)
 }
 
 /**
@@ -506,6 +693,385 @@ function deriveTypeName(className: string): string {
     return className.slice(0, -4)
   }
   return className
+}
+
+/**
+ * Extract the inner lines of a `do...end` block starting at startLineIndex.
+ * Handles nested do...end blocks by counting depth.
+ * Does NOT include the first line (the `.each do |var|` header) nor the final `end`.
+ */
+function extractDoBlockInnerLines(
+  lines: string[],
+  startLineIndex: number
+): string[] {
+  let depth = 0
+  const inner: string[] = []
+
+  for (let i = startLineIndex; i < lines.length; i++) {
+    // Strip comments and string literals to avoid false `do`/`end` matches
+    const stripped = lines[i]
+      .replace(/#.*$/, "")
+      .replace(/"[^"]*"|'[^']*'|:[^:,\s\]{}()]+/, "")
+    const doCount = (stripped.match(/\bdo\b/g) || []).length
+    const endCount = (stripped.match(/\bend\b/g) || []).length
+
+    depth += doCount - endCount
+
+    if (i === startLineIndex) {
+      // The header line contributes 1 `do`, depth should be 1 after. Skip adding to inner.
+      continue
+    }
+
+    if (depth <= 0) {
+      // This is the closing `end` for the block — stop
+      break
+    }
+    inner.push(lines[i])
+  }
+
+  return inner
+}
+
+/**
+ * Given the inner lines of an `.each do |blockVar|` block, extract all
+ * field declaration patterns that reference the block variable.
+ *
+ * Handles:
+ *   field column, Integer              → { suffix: "", type: "Int" }
+ *   field column.to_sym, Integer       → { suffix: "", type: "Int" }
+ *   field :"#{column}_average", Float  → { suffix: "_average", type: "Float" }
+ */
+function extractFieldPatternsFromBlock(
+  blockLines: string[],
+  blockVar: string
+): DynamicFieldPattern[] {
+  const patterns: DynamicFieldPattern[] = []
+  const seen = new Set<string>()
+
+  for (const line of blockLines) {
+    // Skip lines inside nested define_method/do blocks that don't contain `field`
+    if (!line.includes("field")) continue
+
+    // Pattern 1: field blockVar[.method_call], Type  (bare variable with optional method calls like .to_sym)
+    const bareRe = new RegExp(
+      `\\bfield\\s+${blockVar}(?:\\.[\\w]+)*\\s*,\\s*([A-Z]\\w*)`
+    )
+    const bareM = line.match(bareRe)
+    if (bareM) {
+      const type = normalizeRubyType(bareM[1])
+      if (type) {
+        const key = `|${type}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          patterns.push({ suffix: "", type })
+        }
+      }
+    }
+
+    // Pattern 2: field :"#{blockVar}<suffix>", Type  (interpolated symbol)
+    const interpRe = new RegExp(
+      `\\bfield\\s+:"#\\{${blockVar}\\}([^"]*)"\\s*,\\s*([A-Z]\\w*)`
+    )
+    const interpM = line.match(interpRe)
+    if (interpM) {
+      const suffix = interpM[1] // e.g. "_average" or "_percentage"
+      const type = normalizeRubyType(interpM[2])
+      if (type) {
+        const key = `${suffix}|${type}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          patterns.push({ suffix, type })
+        }
+      }
+    }
+  }
+
+  return patterns
+}
+
+/**
+ * Scan Ruby content and return all DynamicFieldBlock descriptors for `.each` blocks
+ * that generate fields. This is called at parse-time (single-file).
+ *
+ * Handled patterns:
+ *   SomeClass.method_name.each do |col|           (useKeys: false — method returns array)
+ *   SomeClass::Nested.method_name.keys.each do |col| (useKeys: true — method returns hash)
+ *   %i[field1 field2].each do |col|               (inline array — values directly available)
+ */
+export function detectDynamicFieldBlocks(content: string): DynamicFieldBlock[] {
+  const blocks: DynamicFieldBlock[] = []
+  const lines = content.split("\n")
+
+  // Pattern 1: ClassName.method(.keys)?.each do |var|
+  const methodCallRe = /([\w:]+)\.([\w]+)(\.keys)?\.each\s+do\s+\|\s*(\w+)\s*\|/
+
+  // Pattern 2: %i[symbols].each do |var| or %w[words].each do |var|
+  const inlineArrayRe = /(%[iw]\[([^\]]+)\])\.each\s+do\s+\|\s*(\w+)\s*\|/
+
+  for (let i = 0; i < lines.length; i++) {
+    const methodMatch = lines[i].match(methodCallRe)
+    if (methodMatch) {
+      const className = methodMatch[1]
+      const methodName = methodMatch[2]
+      const useKeys = Boolean(methodMatch[3])
+      const blockVar = methodMatch[4]
+
+      const innerLines = extractDoBlockInnerLines(lines, i)
+      const patterns = extractFieldPatternsFromBlock(innerLines, blockVar)
+
+      if (patterns.length > 0) {
+        blocks.push({ className, methodName, useKeys, blockVar, patterns })
+      }
+      continue
+    }
+
+    // Try inline array pattern
+    const inlineMatch = lines[i].match(inlineArrayRe)
+    if (inlineMatch) {
+      const arrayStr = inlineMatch[1] // e.g., "%i[shifts created_on_appointments]"
+      const symbolsContent = inlineMatch[2] // e.g., "shifts created_on_appointments"
+      const blockVar = inlineMatch[3] // e.g., "column"
+
+      // Extract individual symbols from the array
+      const inlineValues = symbolsContent
+        .split(/[\s\n,]+/)
+        .map(s => s.trim())
+        .filter(s => s.match(/^\w+$/))
+
+      if (inlineValues.length > 0) {
+        const innerLines = extractDoBlockInnerLines(lines, i)
+        const patterns = extractFieldPatternsFromBlock(innerLines, blockVar)
+
+        if (patterns.length > 0) {
+          blocks.push({
+            useKeys: false,
+            blockVar,
+            patterns,
+            inlineValues,
+          })
+        }
+      }
+    }
+  }
+
+  return blocks
+}
+
+/**
+ * Given a Ruby class name like "CustomerDevelopmentCommunityPerformanceAggregate" or
+ * "CustomerDevelopmentCommunityPerformanceAggregate::Row", find a .rb source file
+ * whose name matches the snake_case version of the class name.
+ *
+ * For nested classes (e.g., "Outer::Inner"), tries the outer class first since
+ * nested classes are typically defined in the same file as their outer class.
+ */
+function findFileForClassName(
+  basePath: string,
+  className: string
+): string | null {
+  // CamelCase → snake_case converter
+  const camelToSnake = (name: string): string =>
+    name
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+      .replace(/([a-z])([A-Z])/g, "$1_$2")
+      .toLowerCase()
+
+  // Build list of file names to try, in priority order
+  const filesToTry: string[] = []
+
+  // For nested classes (e.g., "Outer::Inner"), try the outer class first
+  if (className.includes("::")) {
+    const outerClass = className.split("::")[0]
+    filesToTry.push(`${camelToSnake(outerClass)}.rb`)
+  }
+
+  // Always try the last component as well
+  const lastComponent = className.split("::").pop() || className
+  filesToTry.push(`${camelToSnake(lastComponent)}.rb`)
+
+  function walk(dir: string, depth: number): string | null {
+    if (depth > 12) return null
+    let entries: import("fs").Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return null
+    }
+    for (const entry of entries) {
+      if (
+        entry.name === "node_modules" ||
+        entry.name === ".git" ||
+        entry.name === "tmp" ||
+        entry.name === "vendor" ||
+        entry.name === "spec" ||
+        entry.name === "test"
+      )
+        continue
+      const fullPath = path.join(dir, entry.name)
+      // Check if this file matches any of our target filenames
+      if (entry.isFile() && filesToTry.includes(entry.name)) return fullPath
+      if (entry.isDirectory()) {
+        const found = walk(fullPath, depth + 1)
+        if (found) return found
+      }
+    }
+    return null
+  }
+
+  return walk(basePath, 0)
+}
+
+/**
+ * From a block of Ruby content (after the method def), extract field names.
+ * useKeys=false: method returns %i[name1 name2 ...] or [name1, name2, ...]
+ * useKeys=true:  method returns a hash { name1: ..., name2: ... }; return the keys
+ */
+function extractNamesFromMethodBody(
+  afterMethodDef: string,
+  useKeys: boolean
+): string[] {
+  if (!useKeys) {
+    // Look for %i[field1\n  field2\n  field3]
+    const symArrayMatch = afterMethodDef.match(/%i\[([^\]]+)\]/)
+    if (symArrayMatch) {
+      return symArrayMatch[1]
+        .split(/[\s\n,]+/)
+        .map(s => s.trim())
+        .filter(s => s.match(/^\w+$/))
+    }
+    // Look for plain Ruby array: %w[...] or [:name, :name, ...]
+    const wArrayMatch = afterMethodDef.match(/%w\[([^\]]+)\]/)
+    if (wArrayMatch) {
+      return wArrayMatch[1].split(/\s+/).filter(s => s)
+    }
+  } else {
+    // Extract hash keys { key1: ..., key2: ... }
+    const hashMatch = afterMethodDef.match(/\{([^}]+)\}/)
+    if (hashMatch) {
+      const keys: string[] = []
+      const keyRe = /(\w+):/g
+      let m: RegExpExecArray | null
+      while ((m = keyRe.exec(hashMatch[1])) !== null) {
+        keys.push(m[1])
+      }
+      return keys
+    }
+  }
+  return []
+}
+
+/**
+ * Resolve a single DynamicFieldBlock to concrete FieldDefinitions.
+ * For inline arrays, uses the values directly.
+ * For method calls, searches allContent for the method definition,
+ * then falls back to a targeted filesystem search using basePath.
+ */
+function resolveDynamicBlock(
+  block: DynamicFieldBlock,
+  allContent: string,
+  basePath: string
+): FieldDefinition[] {
+  const { className, methodName, useKeys, patterns, inlineValues } = block
+  const fields: FieldDefinition[] = []
+
+  let fieldNames: string[] = []
+
+  // Case 1: Inline array — values are directly available
+  if (inlineValues && inlineValues.length > 0) {
+    fieldNames = inlineValues
+  }
+  // Case 2: Method call — need to resolve through files
+  else if (className && methodName) {
+    // Build a corpus: all loaded content + possibly the model file
+    let corpus = allContent
+
+    // If method not found in all loaded content, search for the model file
+    if (!new RegExp(`def\\s+self\\.${methodName}\\b`).test(corpus)) {
+      const modelFile = findFileForClassName(basePath, className)
+      if (modelFile) {
+        try {
+          corpus = fs.readFileSync(modelFile, "utf-8")
+        } catch {
+          return []
+        }
+      } else {
+        return []
+      }
+    }
+
+    // Find the method definition
+    const methodMatch = corpus.match(
+      new RegExp(`def\\s+self\\.${methodName}\\b`, "m")
+    )
+    if (!methodMatch) return []
+
+    const afterDef = corpus.substring(methodMatch.index!)
+    fieldNames = extractNamesFromMethodBody(afterDef, useKeys)
+  } else {
+    return []
+  }
+
+  if (fieldNames.length === 0) return []
+
+  // For each discovered field name × each field pattern, generate a FieldDefinition
+  for (const fieldName of fieldNames) {
+    for (const pattern of patterns) {
+      const fullName = fieldName + pattern.suffix
+      fields.push({
+        name: snakeToCamel(fullName),
+        type: pattern.type,
+        nullable: true,
+        isList: false,
+        listDepth: 0,
+        access: ["private"],
+        description: inlineValues
+          ? `Generated from inline array`
+          : `Generated from ${className}.${methodName}`,
+      })
+    }
+  }
+
+  return fields
+}
+
+/**
+ * Second-pass: resolve all DynamicFieldBlocks on each type definition.
+ * Modifies typeDef.fields in-place by appending the generated fields.
+ * Must be called after all type files have been loaded.
+ *
+ * @param typeDefs  All parsed type definitions (may include ones with dynamicFieldBlocks)
+ * @param allFiles  Map of filePath → content for all loaded files
+ * @param basePath  Workspace root for fallback model file discovery
+ */
+export function resolveDynamicFields(
+  typeDefs: GraphQLTypeDefinition[],
+  allFiles: Map<string, string>,
+  basePath: string
+): void {
+  // Concatenate all loaded content once for fast searching
+  const allContent = [...allFiles.values()].join("\n")
+
+  for (const typeDef of typeDefs) {
+    if (!typeDef.dynamicFieldBlocks || typeDef.dynamicFieldBlocks.length === 0)
+      continue
+
+    for (const block of typeDef.dynamicFieldBlocks) {
+      const generated = resolveDynamicBlock(block, allContent, basePath)
+      if (generated.length > 0) {
+        // Avoid duplicating fields already declared statically
+        const existingNames = new Set(typeDef.fields.map(f => f.name))
+        for (const f of generated) {
+          if (!existingNames.has(f.name)) {
+            typeDef.fields.push(f)
+            existingNames.add(f.name)
+          }
+        }
+      }
+    }
+
+    // Clear to avoid re-processing
+    delete typeDef.dynamicFieldBlocks
+  }
 }
 
 /**
@@ -546,6 +1112,7 @@ function parseFields(
         name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: false, // belongs_to is always singular
+        listDepth: 0, // no list nesting
       })
     }
   }
@@ -562,6 +1129,7 @@ function parseFields(
         name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_many is always a list
+        listDepth: 1, // single-level list
       })
     }
   }
@@ -578,6 +1146,7 @@ function parseFields(
         name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: false, // has_one_attached is always singular
+        listDepth: 0, // no list nesting
       })
     }
   }
@@ -594,6 +1163,7 @@ function parseFields(
         name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_many_attached is always a list
+        listDepth: 1, // single-level list
       })
     }
   }
@@ -610,6 +1180,7 @@ function parseFields(
         name: parsed.camelize !== false ? snakeToCamel(fieldName) : fieldName,
         ...parsed,
         isList: true, // has_and_belongs_to_many is always a list
+        listDepth: 1, // single-level list
       })
     }
   }
@@ -625,15 +1196,38 @@ function parseFields(
       const fieldName = match[1]
       const rest = match[2]
 
-      const isList = rest.trim().startsWith("[")
+      let listDepth = 0
+      let isList = false
       let typePart: string
-      if (isList) {
-        const bracketMatch = rest.match(/^\s*\[([^\]]+)\]/)
-        if (!bracketMatch) continue
-        typePart = bracketMatch[1].trim()
+
+      if (rest.trim().startsWith("[")) {
+        // Count nested list depth by finding opening and closing brackets
+        const leadingBrackets = rest.match(/^\s*(\[+)/)
+        if (!leadingBrackets) continue
+        const openBrackets = leadingBrackets[1].length
+        const bracketsStart = leadingBrackets[0].length
+
+        // Find matching closing brackets
+        const afterOpenBrackets = rest.substring(bracketsStart)
+        const trailingBrackets = afterOpenBrackets.match(/(\]+)(\s|,|$)/)
+        if (!trailingBrackets) continue
+        const closeBrackets = trailingBrackets[1].length
+        const closeBracketsStart = afterOpenBrackets.indexOf(
+          trailingBrackets[1]
+        )
+
+        // Extract the type between brackets
+        const innerContent = afterOpenBrackets
+          .substring(0, closeBracketsStart)
+          .trim()
+
+        isList = true
+        listDepth = Math.min(openBrackets, closeBrackets)
+        typePart = innerContent
       } else {
         typePart = rest.split(",")[0].trim()
       }
+
       const type = normalizeRubyType(typePart)
       if (!type) continue
 
@@ -646,6 +1240,7 @@ function parseFields(
         type,
         nullable,
         isList,
+        listDepth,
         access: ["private"],
       })
     }
@@ -669,6 +1264,8 @@ interface ParsedFieldRest {
   type: string
   nullable: boolean
   isList: boolean
+  /** Nesting depth for lists; e.g. [[Type]] has listDepth=2, [Type] has listDepth=1 */
+  listDepth: number
   access: AccessLevel
   description?: string
   /** Full Ruby path of the field type for namespace disambiguation */
@@ -677,6 +1274,8 @@ interface ParsedFieldRest {
   resolverClassName?: string
   /** Whether the field name should be camelCased (default: true) */
   camelize?: boolean
+  /** Whether this field uses .connection_type (e.g., MyType.connection_type) */
+  isConnectionType?: boolean
 }
 
 /**
@@ -684,6 +1283,10 @@ interface ParsedFieldRest {
  * e.g. "String, null: false, access: :public"
  */
 function parseFieldRest(rest: string): ParsedFieldRest | null {
+  // Strip inline comments — e.g., `field :name, Type # TODO: comment` → `field :name, Type`
+  // This prevents comments from being parsed as part of the type name
+  rest = rest.split("#")[0].trim()
+
   // Strip trailing `do` keyword — some field declarations open a `do...end`
   // block for inline argument declarations, e.g.:
   //   field :pay_period_summary, Craftsman::Graphql::CraftsmanPayPeriodSummaryType do
@@ -691,15 +1294,18 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
   // only care about the type and field-level options.
   rest = rest.replace(/\s+do\s*$/, "")
 
-  // Detect `field :name, resolver: Class` pattern.
+  // Detect `field :name, resolver: Class`, `mutation: Class`, or `subscription: Class` pattern.
   // When a field delegates to a standalone resolver class, store the class name
   // so the schema builder can wire up its return type and arguments at build time.
-  const resolverMatch = rest.match(/\bresolver:\s+([\w:]+)/)
+  const resolverMatch = rest.match(
+    /\b(?:resolver|mutation|subscription):\s+([\w:]+)/
+  )
   if (resolverMatch) {
     return {
       type: "String", // placeholder; actual return type resolved at schema-build time
       nullable: true,
       isList: false,
+      listDepth: 0,
       access: parseAccessLevel(rest),
       resolverClassName: resolverMatch[1].replace(/^::/, ""),
     }
@@ -710,33 +1316,67 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
   // For arrays, may include inline options: [SomeType, { null: true }]
   const isList = rest.trim().startsWith("[")
 
+  let listDepth = 0
   let typePart: string
+
   if (isList) {
-    // Use non-greedy matching (.+?) to stop at the FIRST closing bracket,
-    // not the last one. This prevents capturing options after the bracket.
-    const bracketMatch = rest.match(/^\s*\[(.+?)\]/)
-    if (!bracketMatch) {
+    // Extract nested list structure: [[Type]], [Type], etc.
+    // Count opening brackets at the start, then find the matching closing brackets.
+    const leadingBrackets = rest.match(/^\s*(\[+)/)
+    if (!leadingBrackets) {
       return null
     }
+    const openBrackets = leadingBrackets[1].length
+    const bracketsStart = leadingBrackets[0].length
+
+    // Find matching closing brackets by counting from the back
+    const afterOpenBrackets = rest.substring(bracketsStart)
+    const trailingBrackets = afterOpenBrackets.match(/(\]+)\s*(,|$)/)
+    if (!trailingBrackets) {
+      return null
+    }
+    const closeBrackets = trailingBrackets[1].length
+    const closeBracketsStart = afterOpenBrackets.indexOf(trailingBrackets[1])
+
+    // The type is between the opening and closing brackets
+    // e.g., for [[Type]], innterContent is "Type"
+    // e.g., for [Type], innerContent is "Type"
+    const innerContent = afterOpenBrackets
+      .substring(0, closeBracketsStart)
+      .trim()
+
+    // Count actual nesting depth (both opening and closing must match for proper nesting)
+    listDepth = Math.min(openBrackets, closeBrackets)
+
     // Inside brackets, there may be a type followed by comma and inline options: Type, { null: true }
     // We only care about the type part, so split on comma and take the first element
-    typePart = bracketMatch[1].split(",")[0].trim()
+    typePart = innerContent.split(",")[0].trim()
   } else {
     // Get everything up to the first comma or end
     const parts = rest.split(",")
     typePart = parts[0].trim()
+    // Strip quotes if the type was passed as a string literal (e.g., "::Module::Type")
+    // This handles both single and double quotes
+    typePart = typePart.replace(/^["']|["']$/g, "").trim()
   }
+
+  // Detect .connection_type suffix (e.g., MyType.connection_type)
+  // This indicates the field should be wrapped in a Relay connection type with pagination args
+  const isConnectionType = typePart.includes(".connection_type")
+  const baseTypePart = isConnectionType
+    ? typePart.replace(/\.connection_type$/, "").trim()
+    : typePart
 
   // Preserve the full Ruby path before normalising — used at schema-build time
   // to look up the exact graphql_name in rubyPathMap when two namespaces define
   // a class with the same short name (e.g. Directory::EquipmentAssetType vs
   // EquipmentAssets::EquipmentAssetType both normalise to "EquipmentAsset").
-  const typeRubyPath = typePart.includes("::")
-    ? typePart.replace(/^::/, "").trim()
+  const typeRubyPath = baseTypePart.includes("::")
+    ? baseTypePart.replace(/^::/, "").trim()
     : undefined
 
   // Clean up type — remove Ruby namespacing
-  const type = normalizeRubyType(typePart)
+  const type = normalizeRubyType(baseTypePart)
   if (!type) {
     return null
   }
@@ -777,7 +1417,17 @@ function parseFieldRest(rest: string): ParsedFieldRest | null {
   const camelizeMatch = optionsString.match(/camelize:\s*(true|false)/)
   const camelize = camelizeMatch ? camelizeMatch[1] === "true" : true
 
-  return { type, nullable, isList, access, description, typeRubyPath, camelize }
+  return {
+    type,
+    nullable,
+    isList,
+    listDepth,
+    access,
+    description,
+    typeRubyPath,
+    camelize,
+    isConnectionType: isConnectionType || undefined,
+  }
 }
 
 /**
@@ -875,10 +1525,11 @@ export function parseAccessLevel(optionString: string): AccessLevel {
 // ── Resolver Parsing ───────────────────────────────────────────────────────────
 
 /**
- * Convert snake_case to camelCase.
+ * Convert snake_case to camelCase, including cases where the segment after
+ * an underscore is a number (e.g., street_address_1 → streetAddress1).
  */
 export function snakeToCamel(snake: string): string {
-  return snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+  return snake.replace(/_(.)/g, (_, c) => c.toUpperCase())
 }
 
 /**
@@ -909,6 +1560,11 @@ function extractDescription(content: string): string | undefined {
 export function parseMixinArguments(
   fileContent: string
 ): { modulePath: string; arguments: ArgumentDefinition[] } | null {
+  // Skip non-Ruby files (e.g., TypeScript/JavaScript)
+  if (isJavaScriptFile(fileContent)) {
+    return null
+  }
+
   const lines = fileContent.split("\n")
   const contentLines = lines.filter(l => !l.trim().startsWith("#"))
   const content = contentLines.join("\n")
@@ -977,22 +1633,41 @@ export function parseResolverDefinition(
   fileName: string,
   mixinRegistry: Map<string, ArgumentDefinition[]> = new Map()
 ): ResolverDefinition | null {
+  // Skip non-Ruby files (e.g., TypeScript/JavaScript)
+  if (isJavaScriptFile(fileContent)) {
+    return null
+  }
+
   const lines = fileContent.split("\n")
   const contentLines = lines.filter(l => !l.trim().startsWith("#"))
   const content = contentLines.join("\n")
 
-  // Extract class definition
-  const classMatch = content.match(/class\s+(\w+)\s*<\s*([\w:]+)/)
-  if (!classMatch) {
+  // Extract all class definitions from the file
+  const classRegex = /class\s+(\w+)\s*<\s*([\w:]+)/g
+  let classMatch: RegExpExecArray | null
+  let resolverMatch: RegExpExecArray | null = null
+  let resolverClassName: string = ""
+  let resolverParentClass: string = ""
+
+  // Find the first class that is a valid resolver class
+  while ((classMatch = classRegex.exec(content)) !== null) {
+    const className = classMatch[1]
+    const parentClass = classMatch[2]
+
+    if (isResolverClass(parentClass, className)) {
+      resolverMatch = classMatch
+      resolverClassName = className
+      resolverParentClass = parentClass
+      break
+    }
+  }
+
+  if (!resolverMatch) {
     return null
   }
 
-  const className = classMatch[1]
-  const parentClass = classMatch[2]
-
-  if (!isResolverClass(parentClass)) {
-    return null
-  }
+  const className = resolverClassName
+  const parentClass = resolverParentClass
 
   // Derive the full class name from module nesting
   const modules: string[] = []
@@ -1005,14 +1680,17 @@ export function parseResolverDefinition(
 
   // Parse return type. Supports three forms:
   //   type [SomeType], null: false           → list (connection)
+  //   type [[SomeType]], null: false         → nested list
   //   type SomeType.connection_type, null: false  → explicit connection
   //   type SomeType, null: false             → single object
+  // Match: optional brackets, type name, optional brackets, optional .connection_type, optional comma + options
   const typeMatch = content.match(
-    /^\s*type\s+(\[?[:\w]+\]?(?:\.connection_type)?)\s*,?\s*(.*?)$/m
+    /^\s*type\s+((?:\[+)?[:\w]+(?:\]+)?(?:\.connection_type)?)\s*,?\s*(.*?)$/m
   )
   let returnType = "String"
   let returnTypeRubyPath: string | undefined
   let returnTypeIsList = false
+  let returnTypeListDepth = 0
   let returnTypeNullable = true
 
   if (typeMatch) {
@@ -1020,13 +1698,21 @@ export function parseResolverDefinition(
     const typeOpts = typeMatch[2] || ""
 
     const isConnectionType = rawType.endsWith(".connection_type")
-    returnTypeIsList = rawType.startsWith("[")
+
+    // Calculate list depth
+    if (rawType.startsWith("[")) {
+      const bracketMatch = rawType.match(/^(\[+)/)
+      if (bracketMatch) {
+        returnTypeListDepth = bracketMatch[1].length
+        returnTypeIsList = true
+      }
+    }
 
     // Strip brackets and .connection_type suffix to get the base type name
     const typeStr = rawType
       .replace(/^\.connection_type$/, "")
       .replace(/\.connection_type$/, "")
-      .replace(/^\[|\]$/g, "")
+      .replace(/^\[+|\]+$/g, "")
       .trim()
     returnType = normalizeRubyType(typeStr) || "String"
 
@@ -1087,16 +1773,114 @@ export function parseResolverDefinition(
     ? typeMatch[1].trim().endsWith(".connection_type")
     : false
 
+  // Normalise the parent class: strip leading :: so the inheritance walker
+  // can match against stored class names (which never carry the leading ::).
+  const fullParentClass = parentClass.replace(/^::/, "")
+
   return {
     className: fullClassName,
+    parentClass: fullParentClass,
     returnType,
     returnTypeRubyPath,
     returnTypeIsList,
+    returnTypeListDepth,
     isConnectionType,
     returnTypeNullable,
     arguments: args,
     fileName,
     description,
+  }
+}
+
+/**
+ * Walk the resolver parent-class chain and merge ancestor arguments into each
+ * resolver's own argument list.  This handles patterns like:
+ *
+ *   class UpdateReviewMutationBase < NitroGraphql::BaseMutation
+ *     argument :review_id, ID, required: true
+ *   end
+ *
+ *   class UpdateQuarterlyReviewMutation < EmployeeReviews::Graphql::UpdateReviewMutationBase
+ *     argument :input, QuarterlyReviewInput
+ *   end
+ *
+ * After resolution UpdateQuarterlyReviewMutation.arguments includes both
+ * :input (own) and :review_id (inherited).
+ *
+ * A resolver's own arguments always take precedence over parent arguments.
+ * If a resolver doesn't declare a return type (still "String" with no ruby
+ * path) it also inherits the parent's return type.
+ */
+export function resolveResolverInheritance(
+  resolvers: ResolverDefinition[]
+): void {
+  // Build a lookup map keyed by full class name.
+  const byClassName = new Map<string, ResolverDefinition>()
+  for (const r of resolvers) {
+    byClassName.set(r.className, r)
+  }
+
+  // Find a resolver in the registry by exact match or namespace-aware suffix.
+  function findParent(parentClass: string): ResolverDefinition | undefined {
+    if (byClassName.has(parentClass)) return byClassName.get(parentClass)
+    // Suffix match — handles cases where the parent reference was written as a
+    // shorter qualified name (e.g. "Graphql::UpdateReviewMutationBase") but the
+    // stored key is the full path.
+    const tail = parentClass.split("::").pop()!
+    for (const [key, r] of byClassName) {
+      if (key === tail || key.endsWith("::" + tail)) {
+        const parentSegs = parentClass.split("::")
+        const keySegs = key.split("::")
+        if (
+          keySegs.length >= parentSegs.length &&
+          keySegs.slice(keySegs.length - parentSegs.length).join("::") ===
+            parentClass
+        ) {
+          return r
+        }
+      }
+    }
+    return undefined
+  }
+
+  const visited = new Set<string>()
+
+  function ensureInherited(resolver: ResolverDefinition): void {
+    if (visited.has(resolver.className)) return
+    visited.add(resolver.className)
+
+    const parent = findParent(resolver.parentClass)
+    if (!parent) return // Parent not in our parsed set — nothing to inherit
+
+    // Resolve parent's own inheritance first (depth-first)
+    ensureInherited(parent)
+
+    // Merge parent arguments — child's own args take precedence
+    const ownArgNames = new Set(resolver.arguments.map(a => a.name))
+    for (const parentArg of parent.arguments) {
+      if (!ownArgNames.has(parentArg.name)) {
+        resolver.arguments.push(parentArg)
+        ownArgNames.add(parentArg.name)
+      }
+    }
+
+    // Inherit return type if the child resolver has none of its own
+    if (
+      resolver.returnType === "String" &&
+      !resolver.returnTypeRubyPath &&
+      (parent.returnType !== "String" || parent.returnTypeRubyPath)
+    ) {
+      resolver.returnType = parent.returnType
+      resolver.returnTypeRubyPath = parent.returnTypeRubyPath
+      resolver.returnTypeIsList = parent.returnTypeIsList
+      resolver.returnTypeListDepth = parent.returnTypeListDepth
+      resolver.returnTypeNullable = parent.returnTypeNullable
+      resolver.isConnectionType = parent.isConnectionType
+    }
+  }
+
+  for (const resolver of resolvers) {
+    ensureInherited(resolver)
   }
 }
 
@@ -1141,6 +1925,7 @@ interface ParsedArgumentRest {
   typeRubyPath?: string
   required: boolean
   isList: boolean
+  listDepth: number
   defaultValue?: string
 }
 
@@ -1162,19 +1947,48 @@ function parseArgumentRest(rest: string): ParsedArgumentRest | null {
   // Clean up the content: normalize newlines and multiple spaces
   const cleaned = workingContent.replace(/\s+/g, " ").trim()
 
-  const isList = cleaned.startsWith("[")
-
+  // Count nesting depth and check for lists
+  let listDepth = 0
   let typePart: string
-  if (isList) {
-    const bracketMatch = cleaned.match(/^\s*\[([^\]]+)\]/)
-    if (!bracketMatch) {
+
+  if (cleaned.startsWith("[")) {
+    // Extract nested list structure: [[Type]], [Type], etc.
+    const leadingBrackets = cleaned.match(/^(\[+)/)
+    if (!leadingBrackets) {
       return null
     }
-    typePart = bracketMatch[1].trim()
+    const openBrackets = leadingBrackets[1].length
+    const bracketsStart = leadingBrackets[0].length
+
+    // Find matching closing brackets
+    const afterOpenBrackets = cleaned.substring(bracketsStart)
+    const trailingBrackets = afterOpenBrackets.match(/(\]+)(\s|,|$)/)
+    if (!trailingBrackets) {
+      return null
+    }
+    const closeBrackets = trailingBrackets[1].length
+    const closeBracketsStart = afterOpenBrackets.indexOf(trailingBrackets[1])
+
+    // Extract the type between brackets
+    const innerContent = afterOpenBrackets
+      .substring(0, closeBracketsStart)
+      .trim()
+
+    // Use the minimum to detect nesting depth
+    listDepth = Math.min(openBrackets, closeBrackets)
+    typePart = innerContent
   } else {
     // Get everything up to first comma or end
     const parts = cleaned.split(",")
     typePart = parts[0].trim()
+    // Strip quotes if the type was passed as a string literal (e.g., "::Module::Type")
+    // This handles both single and double quotes
+    typePart = typePart.replace(/^["']|["']$/g, "").trim()
+    // Ruby type paths are [\w:]+ with no whitespace. Strip anything after
+    // the first space so that custom DSL methods on the following line
+    // (e.g. `review_class Foo::Bar` collapsed into the same comma-less
+    // segment) don't corrupt the type name.
+    typePart = typePart.match(/^[\w:]+/)?.[0] ?? typePart
   }
 
   const type = normalizeRubyType(typePart)
@@ -1203,7 +2017,8 @@ function parseArgumentRest(rest: string): ParsedArgumentRest | null {
     type,
     typeRubyPath,
     required: effectiveRequired,
-    isList,
+    isList: listDepth > 0,
+    listDepth,
     defaultValue,
   }
 }
@@ -1223,37 +2038,63 @@ function parseFieldBlockArgs(
 
   while (i < lines.length) {
     const line = lines[i]
-    // Match a field declaration whose line ends with `do`
-    const fieldDoMatch = line.match(/\bfield\s+:(\w+).*\bdo\s*$/)
-    if (fieldDoMatch) {
-      const fieldName = snakeToCamel(fieldDoMatch[1])
+    // Match a field declaration (may or may not have `do` on same line)
+    const fieldMatch = line.match(/\bfield\s+:(\w+)/)
+    if (fieldMatch) {
+      const fieldName = snakeToCamel(fieldMatch[1])
       const baseIndent = (line.match(/^(\s*)/)?.[1] ?? "").length
-      const blockArgs: ArgumentDefinition[] = []
 
-      i++
-      while (i < lines.length) {
-        const innerLine = lines[i]
-        const innerTrimmed = innerLine.trim()
-        const innerIndent = (innerLine.match(/^(\s*)/)?.[1] ?? "").length
-
-        // Stop at an `end` at or before the field's indentation level
-        if (innerTrimmed === "end" && innerIndent <= baseIndent) break
-
-        const argMatch = innerTrimmed.match(/^argument\s+:(\w+)\s*,\s*(.+)/)
-        if (argMatch) {
-          const parsed = parseArgumentRest(argMatch[2])
-          if (parsed) {
-            blockArgs.push({
-              name: snakeToCamel(argMatch[1]),
-              ...parsed,
-            })
+      // Check if `do` is on the same line
+      let doLineIndex = -1
+      if (line.includes("do")) {
+        doLineIndex = i
+      } else {
+        // Look ahead for `do` on following lines (reasonable search distance)
+        // Multi-line field declarations typically have `do` within 3-5 lines.
+        // IMPORTANT: Stop if we encounter another `field` keyword, as that indicates
+        // a new field declaration and any `do` found would belong to that field, not this one.
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const lookaheadLine = lines[j]
+          // Stop if we hit another field declaration
+          if (lookaheadLine.includes("field ")) {
+            break
+          }
+          if (lookaheadLine.includes("do")) {
+            doLineIndex = j
+            break
           }
         }
-        i++
       }
 
-      if (blockArgs.length > 0) {
-        result.set(fieldName, blockArgs)
+      if (doLineIndex !== -1) {
+        // Found a `do` block, now parse arguments
+        const blockArgs: ArgumentDefinition[] = []
+        let argIndex = doLineIndex + 1
+
+        while (argIndex < lines.length) {
+          const argLine = lines[argIndex]
+          const argTrimmed = argLine.trim()
+          const argIndent = (argLine.match(/^(\s*)/)?.[1] ?? "").length
+
+          // Stop at an `end` at or before the field's indentation level
+          if (argTrimmed === "end" && argIndent <= baseIndent) break
+
+          const argMatch = argTrimmed.match(/^argument\s+:(\w+)\s*,\s*(.+)/)
+          if (argMatch) {
+            const parsed = parseArgumentRest(argMatch[2])
+            if (parsed) {
+              blockArgs.push({
+                name: snakeToCamel(argMatch[1]),
+                ...parsed,
+              })
+            }
+          }
+          argIndex++
+        }
+
+        if (blockArgs.length > 0) {
+          result.set(fieldName, blockArgs)
+        }
       }
     }
     i++
@@ -1282,15 +2123,39 @@ export function parseRegistrationFile(
 ): ResolverRegistration[] {
   const registrations: ResolverRegistration[] = []
 
+  // Extract component namespace from module declaration (e.g., "module TerritoryMaps")
+  const moduleMatch = fileContent.match(/^\s*module\s+(\w+)/m)
+  const componentNamespace = moduleMatch ? moduleMatch[1] : undefined
+
   // Split into queries and mutations blocks
   const queriesBlock = extractBlock(fileContent, "queries")
   const mutationsBlock = extractBlock(fileContent, "mutations")
 
+  logger.log(
+    `[NitroGraphQL] Registration file: queriesBlock ${queriesBlock ? "found" : "NOT found"}, mutationsBlock ${mutationsBlock ? "found" : "NOT found"}`
+  )
+
   if (queriesBlock) {
-    parseRegistrationBlock(queriesBlock, "query", registrations)
+    logger.log(
+      `[NitroGraphQL] Parsing queries block (${queriesBlock.length} chars)`
+    )
+    parseRegistrationBlock(
+      queriesBlock,
+      "query",
+      registrations,
+      componentNamespace
+    )
   }
   if (mutationsBlock) {
-    parseRegistrationBlock(mutationsBlock, "mutation", registrations)
+    logger.log(
+      `[NitroGraphQL] Parsing mutations block (${mutationsBlock.length} chars)`
+    )
+    parseRegistrationBlock(
+      mutationsBlock,
+      "mutation",
+      registrations,
+      componentNamespace
+    )
   }
 
   return registrations
@@ -1298,14 +2163,40 @@ export function parseRegistrationFile(
 
 /**
  * Extract a block between `name do` and its matching `end`.
+ * Properly handles nested `do...end` blocks (e.g., field argument blocks).
  */
 function extractBlock(content: string, blockName: string): string | null {
-  const blockRegex = new RegExp(
-    `\\b${blockName}\\s+do\\b([\\s\\S]*?)^\\s*end`,
-    "m"
-  )
-  const match = content.match(blockRegex)
-  return match ? match[1] : null
+  // Find the start of the block: "name do"
+  const blockStartRegex = new RegExp(`\\b${blockName}\\s+do\\b`)
+  const startMatch = blockStartRegex.exec(content)
+
+  if (!startMatch) {
+    return null
+  }
+
+  // Start searching after the opening 'do'
+  const searchStart = startMatch.index + startMatch[0].length
+  const blockContent = content.substring(searchStart)
+
+  // Count nested do...end pairs to find the matching closing 'end'
+  const keywordRegex = /\b(do|end)\b/gi
+  let depth = 1 // The opening 'do' we already found
+  let match: RegExpExecArray | null
+
+  while ((match = keywordRegex.exec(blockContent)) !== null) {
+    const keyword = match[1].toLowerCase()
+    if (keyword === "do") {
+      depth++
+    } else if (keyword === "end") {
+      depth--
+      if (depth === 0) {
+        // Found the matching 'end', extract everything before it
+        return blockContent.substring(0, match.index)
+      }
+    }
+  }
+
+  return null
 }
 
 /**
@@ -1314,7 +2205,8 @@ function extractBlock(content: string, blockName: string): string | null {
 function parseRegistrationBlock(
   block: string,
   target: "query" | "mutation",
-  registrations: ResolverRegistration[]
+  registrations: ResolverRegistration[],
+  componentNamespace?: string
 ): void {
   // Split the block into individual field declarations.
   // A new field starts with `field :` at the beginning of a line (after whitespace).
@@ -1330,6 +2222,10 @@ function parseRegistrationBlock(
     })
   }
 
+  logger.log(
+    `[NitroGraphQL] Registration: found ${fieldPositions.length} field(s) in ${target} block: ${fieldPositions.map(p => p.name).join(", ")}`
+  )
+
   for (let i = 0; i < fieldPositions.length; i++) {
     const { name: fieldName } = fieldPositions[i]
     const start = fieldPositions[i].start
@@ -1337,19 +2233,29 @@ function parseRegistrationBlock(
       i + 1 < fieldPositions.length ? fieldPositions[i + 1].start : block.length
     const fieldBlock = block.slice(start, end)
 
-    // Find resolver: ::Module::Class or resolver: Module::Class within this block
-    const resolverMatch = fieldBlock.match(/resolver:\s*:*([\w][:\w]*)/)
+    // Find resolver:, mutation:, or subscription: ::Module::Class within this block
+    const resolverMatch = fieldBlock.match(
+      /(?:resolver|mutation|subscription):\s*:*([\w][:\w]*)/
+    )
     if (!resolverMatch) {
+      logger.log(
+        `[NitroGraphQL] Registration: field :${fieldName} (${target}) - NO RESOLVER - Block preview: ${fieldBlock.slice(0, 100).replace(/\n/g, "\\n")}`
+      )
       continue
     }
 
     const access = parseAccessLevel(fieldBlock)
+
+    logger.log(
+      `[NitroGraphQL] Registration: parsed ${target} :${fieldName} → resolver ${resolverMatch[1]}`
+    )
 
     registrations.push({
       fieldName: snakeToCamel(fieldName),
       resolverClassName: resolverMatch[1],
       target,
       access,
+      componentNamespace,
     })
   }
 }
@@ -1606,6 +2512,7 @@ export function buildGraphQLSchema(
   function resolveOutputType(
     typeName: string,
     isList: boolean,
+    listDepth: number = 0,
     nullable: boolean
   ): GraphQLOutputType {
     let baseType = getOrBuildType(typeName) as GraphQLOutputType
@@ -1652,9 +2559,14 @@ export function buildGraphQLSchema(
     }
 
     let type: GraphQLOutputType = baseType
-    if (isList) {
-      type = new GraphQLList(new GraphQLNonNull(baseType))
+
+    // Build nested list structure: [[Type]] → List(List(NonNull(Type)))
+    if (listDepth > 0) {
+      for (let i = 0; i < listDepth; i++) {
+        type = new GraphQLList(new GraphQLNonNull(type))
+      }
     }
+
     if (!nullable) {
       type = new GraphQLNonNull(type)
     }
@@ -1664,6 +2576,7 @@ export function buildGraphQLSchema(
   function resolveInputType(
     typeName: string,
     isList: boolean,
+    listDepth: number = 0,
     nullable: boolean
   ): GraphQLInputType {
     let baseType = getOrBuildType(typeName) as GraphQLInputType
@@ -1672,9 +2585,14 @@ export function buildGraphQLSchema(
     }
 
     let type: GraphQLInputType = baseType
-    if (isList) {
-      type = new GraphQLList(new GraphQLNonNull(baseType))
+
+    // Build nested list structure: [[Type]] → List(List(NonNull(Type)))
+    if (listDepth > 0) {
+      for (let i = 0; i < listDepth; i++) {
+        type = new GraphQLList(new GraphQLNonNull(type))
+      }
     }
+
     if (!nullable) {
       type = new GraphQLNonNull(type)
     }
@@ -1775,6 +2693,37 @@ export function buildGraphQLSchema(
   }
 
   /**
+   * Recursively collect interfaces from the ancestor chain (grandparent → parent),
+   * so that a child type automatically implements all interfaces from parent types.
+   * Returns unique interface names (deduplicated).
+   */
+  function collectInheritedInterfaces(
+    def: GraphQLTypeDefinition,
+    visited = new Set<string>()
+  ): string[] {
+    if (visited.has(def.name)) return []
+    visited.add(def.name)
+
+    const parts = def.parentClass.split("::")
+    const lastPart = parts[parts.length - 1]
+    if (!lastPart.endsWith("Type")) return []
+
+    const parentDerivedName = deriveTypeName(lastPart)
+    const parentActualName = typeMap.has(parentDerivedName)
+      ? parentDerivedName
+      : (aliasMap.get(parentDerivedName) ?? parentDerivedName)
+    const parentDef =
+      typeMap.get(parentActualName) ?? typeMap.get(parentDerivedName)
+    if (!parentDef) return []
+
+    // Grandparent interfaces first, then parent's own interfaces
+    const inherited = collectInheritedInterfaces(parentDef, visited)
+    // Deduplicate by combining sets
+    const allInterfaces = new Set([...inherited, ...parentDef.implements])
+    return Array.from(allInterfaces)
+  }
+
+  /**
    * Build a GraphQL field config for a single FieldDefinition, handling:
    *
    * 1. `field :name, resolver: Class` — looks up the resolver in resolverMap,
@@ -1808,6 +2757,7 @@ export function buildGraphQLSchema(
           fieldType = resolveOutputType(
             resolvedReturnTypeName,
             resolver.returnTypeIsList,
+            resolver.returnTypeListDepth,
             resolver.returnTypeNullable
           )
         }
@@ -1837,12 +2787,43 @@ export function buildGraphQLSchema(
       field.typeRubyPath && rubyPathMap.has(field.typeRubyPath)
         ? rubyPathMap.get(field.typeRubyPath)!
         : field.type
-    const fc: any = {
-      type: resolveOutputType(resolvedTypeName, field.isList, !field.nullable),
+
+    // Handle .connection_type for regular fields (e.g., field :employees, MyType.connection_type)
+    let fieldType: GraphQLOutputType
+    let fieldArgs: GraphQLFieldConfigArgumentMap = {}
+
+    if (field.isConnectionType) {
+      // Wrap in connection type and add Relay pagination arguments
+      const connectionType = getOrBuildConnectionType(resolvedTypeName)
+      fieldType = field.nullable
+        ? connectionType
+        : new GraphQLNonNull(connectionType)
+
+      // Add standard Relay connection arguments
+      const relayArgs: GraphQLFieldConfigArgumentMap = {
+        first: { type: GraphQLInt },
+        last: { type: GraphQLInt },
+        before: { type: GraphQLString },
+        after: { type: GraphQLString },
+      }
+      fieldArgs = relayArgs
+    } else {
+      fieldType = resolveOutputType(
+        resolvedTypeName,
+        field.isList,
+        field.listDepth,
+        !field.nullable
+      )
     }
+
+    const fc: any = { type: fieldType }
     if (field.description) fc.description = field.description
     if (field.fieldArgs && field.fieldArgs.length > 0) {
-      fc.args = buildFieldArgs(field.fieldArgs)
+      const inlineArgs = buildFieldArgs(field.fieldArgs)
+      fieldArgs = { ...fieldArgs, ...inlineArgs }
+    }
+    if (Object.keys(fieldArgs).length > 0) {
+      fc.args = fieldArgs
     }
     return fc
   }
@@ -1864,7 +2845,12 @@ export function buildGraphQLSchema(
         // Merge any interface fields not already provided, so that GraphQL
         // interface-conformance validation passes even when the Ruby code relies
         // on inheritance to satisfy the interface contract.
-        for (const ifaceName of def.implements) {
+        // Include both directly-declared and inherited interfaces
+        const allInterfaceNames = new Set([
+          ...def.implements,
+          ...collectInheritedInterfaces(def),
+        ])
+        for (const ifaceName of allInterfaceNames) {
           const ifaceActualName = aliasMap.get(ifaceName) ?? ifaceName
           const ifaceDef =
             typeMap.get(ifaceActualName) ?? typeMap.get(ifaceName)
@@ -1877,6 +2863,7 @@ export function buildGraphQLSchema(
               const ifaceFieldType = resolveOutputType(
                 field.type,
                 field.isList,
+                field.listDepth,
                 !field.nullable
               )
               if (field.name in fieldConfig) {
@@ -1891,12 +2878,20 @@ export function buildGraphQLSchema(
                   if (field.description) {
                     fc.description = field.description
                   }
+                  // Preserve field arguments from interface
+                  if (field.fieldArgs && field.fieldArgs.length > 0) {
+                    fc.args = buildFieldArgs(field.fieldArgs)
+                  }
                   fieldConfig[field.name] = fc
                 }
               } else {
                 const fc: any = { type: ifaceFieldType }
                 if (field.description) {
                   fc.description = field.description
+                }
+                // Preserve field arguments from interface
+                if (field.fieldArgs && field.fieldArgs.length > 0) {
+                  fc.args = buildFieldArgs(field.fieldArgs)
                 }
                 fieldConfig[field.name] = fc
               }
@@ -1914,7 +2909,12 @@ export function buildGraphQLSchema(
       },
 
       interfaces: () => {
-        return def.implements
+        // Collect both directly-declared and inherited interfaces
+        const allInterfaces = new Set([
+          ...def.implements,
+          ...collectInheritedInterfaces(def),
+        ])
+        return Array.from(allInterfaces)
           .map(name => {
             const iface = getOrBuildType(name)
             return iface instanceof GraphQLInterfaceType ? iface : null
@@ -1959,7 +2959,12 @@ export function buildGraphQLSchema(
         // Inherited fields from parent input type chain
         for (const field of collectInheritedFields(def)) {
           const fc: any = {
-            type: resolveInputType(field.type, field.isList, !field.nullable),
+            type: resolveInputType(
+              field.type,
+              field.isList,
+              field.listDepth,
+              !field.nullable
+            ),
           }
           if (field.description) {
             fc.description = field.description
@@ -1969,7 +2974,12 @@ export function buildGraphQLSchema(
         // Own fields (override any inherited)
         for (const field of def.fields) {
           const fc: any = {
-            type: resolveInputType(field.type, field.isList, !field.nullable),
+            type: resolveInputType(
+              field.type,
+              field.isList,
+              field.listDepth,
+              !field.nullable
+            ),
           }
           if (field.description) {
             fc.description = field.description
@@ -2023,14 +3033,36 @@ export function buildGraphQLSchema(
       description: def.description,
       types: () => {
         const memberTypes: GraphQLObjectType[] = []
-        for (const typeName of def.possibleTypes ?? []) {
+        const shortNames = def.possibleTypes ?? []
+        const fullPaths = def.possibleTypesRubyPaths ?? []
+
+        // Try to resolve each member type using both short name and full path
+        for (let i = 0; i < shortNames.length; i++) {
+          const shortName = shortNames[i]
+          const fullPath = fullPaths[i]
+
+          // First try resolving via rubyPathMap using the full path if available
+          let typeName = shortName
+          if (fullPath && rubyPathMap.has(fullPath)) {
+            typeName = rubyPathMap.get(fullPath)!
+          }
+
           const t = getOrBuildType(typeName)
           if (t instanceof GraphQLObjectType) {
             memberTypes.push(t)
+          } else if (!t) {
+            // Log warning if a promised type couldn't be resolved
+            logger.warn(
+              `[NitroGraphQL] Union ${def.name}: couldn't resolve member type '${shortName}' (full path: ${fullPath})`
+            )
           }
         }
+
         if (memberTypes.length === 0) {
           // Placeholder so GraphQL doesn't reject an empty union
+          logger.warn(
+            `[NitroGraphQL] Union ${def.name}: no member types resolved, using placeholder`
+          )
           memberTypes.push(
             new GraphQLObjectType({
               name: `_${def.name}Member`,
@@ -2060,7 +3092,12 @@ export function buildGraphQLSchema(
         argDef.typeRubyPath && rubyPathMap.has(argDef.typeRubyPath)
           ? rubyPathMap.get(argDef.typeRubyPath)!
           : argDef.type
-      let argType = resolveInputType(typeName, argDef.isList, true)
+      let argType = resolveInputType(
+        typeName,
+        argDef.isList,
+        argDef.listDepth,
+        !argDef.required
+      )
       if (argDef.required) {
         argType =
           argType instanceof GraphQLNonNull
@@ -2077,6 +3114,10 @@ export function buildGraphQLSchema(
    * The registration may use the full path (::Warranty::Graphql::AgentStatsQuery)
    * while the resolver stores (Warranty::Graphql::AgentStatsQuery).
    *
+   * For unqualified resolver names (e.g., "TeamsQuery"), prefer the same namespace
+   * as the registration's component to avoid collisions when multiple components
+   * define resolvers with the same class name.
+   *
    * We intentionally do NOT fall back to class-name-only matching: two
    * namespaces may define resolvers with the same leaf class name but
    * different arguments (e.g. Warranty::PendingProposedItemChangesQuery and
@@ -2084,10 +3125,22 @@ export function buildGraphQLSchema(
    * the wrong required arguments to the registered field.
    */
   function findResolver(
-    resolverClassName: string
+    resolverClassName: string,
+    componentNamespace?: string
   ): ResolverDefinition | undefined {
     // Strip leading :: for matching
     const normalized = resolverClassName.replace(/^::/, "")
+
+    // If resolver name is unqualified (no ::) and component namespace is provided,
+    // first try to find resolver in the same component's Graphql namespace
+    if (componentNamespace && !normalized.includes("::")) {
+      const sameNamespaceKey = `${componentNamespace}::Graphql::${normalized}`
+      if (resolverMap.has(sameNamespaceKey)) {
+        return resolverMap.get(sameNamespaceKey)
+      }
+    }
+
+    // Fall back to existing matching logic
     for (const [key, resolver] of resolverMap) {
       if (
         key === normalized ||
@@ -2125,10 +3178,14 @@ export function buildGraphQLSchema(
   const mutationFields: GraphQLFieldConfigMap<any, any> = {}
 
   for (const reg of registrations) {
-    const resolver = findResolver(reg.resolverClassName)
+    const resolver = findResolver(reg.resolverClassName, reg.componentNamespace)
     if (!resolver) {
       logger.log(
-        `[NitroGraphQL]   UNRESOLVED ${reg.target} '${reg.fieldName}': resolver class '${reg.resolverClassName}' not found in parsed resolvers`
+        `[NitroGraphQL]   ⚠️  UNRESOLVED ${reg.target} '${reg.fieldName}': resolver class '${reg.resolverClassName}' not found\n` +
+          `       📍 Expected to find a class definition matching: ${reg.resolverClassName}\n` +
+          `       ✓ Fix: Create a resolver file in graphql/ directory matching the class name\n` +
+          `       💡 Example: class ${reg.resolverClassName.split("::").pop()} < NitroGraphql::BaseQuery\n` +
+          `       💡 Common causes: typo in class name, file not in graphql/ directory, inheritance from wrong base class`
       )
       // Registration found but resolver not parsed — add a permissive placeholder
       // field to avoid false-positive "Cannot query field" errors. The field
@@ -2142,6 +3199,10 @@ export function buildGraphQLSchema(
       }
       continue
     }
+
+    logger.log(
+      `[NitroGraphQL]   RESOLVED ${reg.target} '${reg.fieldName}': ${reg.resolverClassName}`
+    )
 
     // graphql-ruby automatically wraps list-returning fields in a Relay
     // Connection type (nodes/edges/pageInfo/totalEntries) and adds implicit
@@ -2179,6 +3240,7 @@ export function buildGraphQLSchema(
       returnType = resolveOutputType(
         resolvedReturnTypeName,
         resolver.returnTypeIsList,
+        resolver.returnTypeListDepth,
         resolver.returnTypeNullable
       )
     }
@@ -2313,11 +3375,107 @@ export function buildGraphQLSchema(
 
 /**
  * Validate that a schema is well-formed.
- * Returns errors array — empty means valid.
+ * Returns errors array with enhanced messaging — empty means valid.
  */
 export function validateSchemaIntegrity(schema: GraphQLSchema): string[] {
   const errors = validateSchema(schema)
-  return errors.map(e => e.message)
+  return errors.map(e => enhanceValidationErrorMessage(e.message))
+}
+
+/**
+ * Enhance GraphQL validation error messages with more context and actionability.
+ * Detects common patterns and provides specific guidance for fixing them.
+ * Exported for use in the query validator as well.
+ */
+export function enhanceValidationErrorMessage(message: string): string {
+  // Pattern: Union field type conflicts
+  // "Fields "fieldName" conflict because they return conflicting types "Type1" and "Type2"."
+  const unionConflictMatch = message.match(
+    /Fields "([^"]+)" conflict because they return conflicting types "([^"]+)" and "([^"]+)"/
+  )
+  if (unionConflictMatch) {
+    const fieldName = unionConflictMatch[1]
+    const type1 = unionConflictMatch[2]
+    const type2 = unionConflictMatch[3]
+    return (
+      `❌ Union member field conflict: "${fieldName}"\n` +
+      `   Found type "${type1}" in one union member, but "${type2}" in another.\n` +
+      `   ✓ Fix: Make the field types consistent across all union members.\n` +
+      `   ✓ Both should be "${type1}" or both should be "${type2}".\n` +
+      `   📍 Check: Look for field :${fieldName.replace(/([A-Z])/g, "_$1").toLowerCase()} declarations in union member types.\n` +
+      `   💡 If "${fieldName}" is required everywhere, use "null: false" on all versions.\n` +
+      `   💡 If "${fieldName}" is optional everywhere, remove "null: false" from all versions.`
+    )
+  }
+
+  // Pattern: Type does not exist
+  // "@Foo cannot represent value" or "Cannot find type @Foo"
+  const unknownTypeMatch = message.match(/Cannot find type ([a-zA-Z_]\w*)/i)
+  if (unknownTypeMatch) {
+    const typeName = unknownTypeMatch[1]
+    return (
+      `❌ Missing type: "${typeName}"\n` +
+      `   A field or resolver references a type that was not found in the schema.\n` +
+      `   ✓ Fix: Either create a type definition for "${typeName}" or fix the reference.\n` +
+      `   📍 Search your graphql/ directories for a class named "${typeName}Type" or "${typeName}".\n` +
+      `   💡 Ensure the file is in a graphql/ subdirectory so it gets discovered.\n` +
+      `   💡 Check spelling: is it "${typeName}" or did you mean something similar?`
+    )
+  }
+
+  // Pattern: Circular reference warnings
+  if (message.includes("Circular reference") || message.includes("circular")) {
+    return (
+      `⚠️  Circular type reference detected\n` +
+      `   ${message}\n` +
+      `   ✓ Fix: Use lazy type resolution or nullable fields to break the cycle.\n` +
+      `   💡 Make sure at least one field in the cycle is nullable (optional).`
+    )
+  }
+
+  // Pattern: Input object invalid
+  if (message.includes("Input Object type") && message.includes("must have")) {
+    return (
+      `❌ Invalid input type definition\n` +
+      `   ${message}\n` +
+      `   ✓ Fix: Input object types can only contain scalar fields, other input types, or lists/non-nulls of these.\n` +
+      `   💡 You cannot use BaseObject types (ObjectType) inside an input type.\n` +
+      `   💡 Create a separate InputType with InputField definitions instead.`
+    )
+  }
+
+  // Pattern: Missing required argument
+  if (
+    message.includes("Argument") &&
+    message.includes("type must be") &&
+    !message.includes("specified inline")
+  ) {
+    return (
+      `❌ Invalid query/mutation argument\n` +
+      `   ${message}\n` +
+      `   ✓ Fix: Check your argument type definitions in the resolver.\n` +
+      `   💡 Arguments should use: argument :name, Type or argument :name, [Type]\n` +
+      `   💡 Ensure the type exists and is properly named.`
+    )
+  }
+
+  // Pattern: Field return type issues
+  if (message.includes("Field") && message.includes("argument")) {
+    return (
+      `❌ Field or argument definition error\n` +
+      `   ${message}\n` +
+      `   ✓ Fix: Check the field definition in your type class.\n` +
+      `   📍 Look for: field :name, Type or argument :name, Type\n` +
+      `   💡 Ensure all types referenced are defined in your schema.`
+    )
+  }
+
+  // Fallback: Just return the message with a hint to check the GraphQL schema spec
+  return (
+    `${message}\n` +
+    `   ✓ See: https://spec.graphql.org/June2018/#sec-Schema\n` +
+    `   💡 Common fixes: ensure all types exist, field types are consistent, required fields match across union members.`
+  )
 }
 
 // ── Full Build Pipeline ────────────────────────────────────────────────────────
@@ -2386,12 +3544,21 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
         )
       } else {
         logger.log(
-          `[NitroGraphQL]   skipped (no class match): ${filePath.split("/").slice(-2).join("/")}`
+          `[NitroGraphQL]   ℹ️  Skipped file (no class definition): ${filePath.split("/").slice(-3).join("/")}\n` +
+            `       This file doesn't contain a recognized class definition.\n` +
+            `       💡 Types should inherit from: NitroGraphql::Types::BaseObject\n` +
+            `       💡 Queries should inherit from: NitroGraphql::BaseQuery\n` +
+            `       💡 Mutations should inherit from: NitroGraphql::BaseMutation`
         )
         skippedFiles.push(filePath)
       }
     } catch (error) {
-      logger.warn(`[NitroGraphQL] Failed to parse ${filePath}: ${error}`)
+      logger.warn(
+        `[NitroGraphQL] ❌ Failed to parse ${filePath.split("/").slice(-3).join("/")}\n` +
+          `    Error: ${error}\n` +
+          `    ✓ Fix: Check the file syntax and class definitions\n` +
+          `    💡 Common issues: invalid Ruby syntax, malformed field declarations, missing quotes`
+      )
       skippedFiles.push(filePath)
     }
   }
@@ -2399,6 +3566,13 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   logger.log(
     `[NitroGraphQL] Parsed ${typeDefs.length} type definitions, ${resolvers.length} resolvers`
   )
+
+  // Resolve argument (and return-type) inheritance from intermediate base classes.
+  // e.g. UpdateQuarterlyReviewMutation < UpdateReviewMutationBase < NitroGraphql::BaseMutation
+  resolveResolverInheritance(resolvers)
+
+  // Resolve dynamic fields from `.each` blocks — requires all files to search for method defs
+  resolveDynamicFields(typeDefs, files, basePath)
 
   // Parse registration files
   const registrationFiles = findRegistrationFiles(basePath)
@@ -2422,7 +3596,13 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
       }
     } catch (error) {
       logger.warn(
-        `[NitroGraphQL] Failed to parse registration file ${regFile}: ${error}`
+        `[NitroGraphQL] ❌ Failed to parse registration file ${regFile.split("/").slice(-3).join("/")}\n` +
+          `    Error: ${error}\n` +
+          `    ✓ Check: queries/mutations block has proper syntax\n` +
+          `    💡 Expected format:\n` +
+          `       queries do\n` +
+          `         field :name, resolver: MyQuery\n` +
+          `       end`
       )
     }
   }
