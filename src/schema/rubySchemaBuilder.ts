@@ -364,7 +364,8 @@ function isJavaScriptFile(content: string): boolean {
  */
 export function parseRubyTypeDefinition(
   fileContent: string,
-  fileName: string
+  fileName: string,
+  mixinFieldRegistry?: Map<string, FieldDefinition[]>
 ): GraphQLTypeDefinition | null {
   // Skip non-Ruby files (e.g., TypeScript/JavaScript)
   if (isJavaScriptFile(fileContent)) {
@@ -473,6 +474,44 @@ export function parseRubyTypeDefinition(
     }
 
     const fields = parseFields(content, kind)
+
+    // Resolve fields from included mixins
+    if (mixinFieldRegistry) {
+      const includeRegex = /\binclude\s+([\w:]+)/g
+      let includeMatch: RegExpExecArray | null
+      const seenFieldNames = new Set(fields.map(f => f.name))
+
+      const modules: string[] = []
+      const moduleRegex = /module\s+(\w+)/g
+      let modMatch: RegExpExecArray | null
+      while ((modMatch = moduleRegex.exec(content)) !== null) {
+        modules.push(modMatch[1])
+      }
+
+      while ((includeMatch = includeRegex.exec(content)) !== null) {
+        const rawInclude = includeMatch[1].replace(/^::/, "")
+        // Try the literal include path first, then scoped variants
+        const candidates = [rawInclude]
+        if (!rawInclude.includes("::") && modules.length > 0) {
+          candidates.push([...modules, rawInclude].join("::"))
+        }
+
+        for (const candidate of candidates) {
+          const mixinFields = mixinFieldRegistry.get(candidate)
+          if (mixinFields) {
+            for (const field of mixinFields) {
+              // Don't duplicate fields already declared directly
+              if (!seenFieldNames.has(field.name)) {
+                fields.push(field)
+                seenFieldNames.add(field.name)
+              }
+            }
+            break
+          }
+        }
+      }
+    }
+
     const description = extractDescription(content)
     const dynamicFieldBlocks = detectDynamicFieldBlocks(content)
 
@@ -529,7 +568,44 @@ export function parseRubyTypeDefinition(
         const name = graphqlNameMatch ? graphqlNameMatch[1] : classBasedName
         const description = extractDescription(content)
 
-        const fields = parseFields(content, "interface")
+        let fields = parseFields(content, "interface")
+
+        // Resolve fields from included mixins for interfaces too
+        if (mixinFieldRegistry) {
+          const includeRegex = /\binclude\s+([\w:]+)/g
+          let includeMatch: RegExpExecArray | null
+          const seenFieldNames = new Set(fields.map(f => f.name))
+
+          const modules: string[] = []
+          const moduleRegex = /module\s+(\w+)/g
+          let modMatch: RegExpExecArray | null
+          while ((modMatch = moduleRegex.exec(content)) !== null) {
+            modules.push(modMatch[1])
+          }
+
+          while ((includeMatch = includeRegex.exec(content)) !== null) {
+            const rawInclude = includeMatch[1].replace(/^::/, "")
+            // Try the literal include path first, then scoped variants
+            const candidates = [rawInclude]
+            if (!rawInclude.includes("::") && modules.length > 0) {
+              candidates.push([...modules, rawInclude].join("::"))
+            }
+
+            for (const candidate of candidates) {
+              const mixinFields = mixinFieldRegistry.get(candidate)
+              if (mixinFields) {
+                for (const field of mixinFields) {
+                  // Don't duplicate fields already declared directly
+                  if (!seenFieldNames.has(field.name)) {
+                    fields.push(field)
+                    seenFieldNames.add(field.name)
+                  }
+                }
+                break
+              }
+            }
+          }
+        }
 
         return {
           name,
@@ -1619,6 +1695,89 @@ export function parseMixinRegistry(
     const mixin = parseMixinArguments(content)
     if (mixin) {
       registry.set(mixin.modulePath, mixin.arguments)
+    }
+  }
+  return registry
+}
+
+/**
+ * Parse a Ruby mixin module file that provides fields via `self.included`.
+ * Returns the full module path and the fields it contributes, or null if
+ * this file doesn't look like a field-providing mixin.
+ *
+ * Example mixin:
+ *   module HumanResources
+ *     module Graphql
+ *       module OfferToStartBreakdownBaseType
+ *         def self.included(base)
+ *           base.field :total, String
+ *           base.field :successful_starts_total, String
+ *         end
+ *       end
+ *     end
+ *   end
+ */
+export function parseMixinFields(
+  fileContent: string
+): { modulePath: string; fields: FieldDefinition[] } | null {
+  // Skip non-Ruby files (e.g., TypeScript/JavaScript)
+  if (isJavaScriptFile(fileContent)) {
+    return null
+  }
+
+  const lines = fileContent.split("\n")
+  const contentLines = lines.filter(l => !l.trim().startsWith("#"))
+  const content = contentLines.join("\n")
+
+  // Must have a self.included block — that's what makes it a field-providing mixin
+  if (!content.includes("self.included")) {
+    return null
+  }
+
+  // Must have at least one field declaration
+  if (!content.includes("field ")) {
+    return null
+  }
+
+  // Collect module names in order of declaration to build the full path
+  const modules: string[] = []
+  const moduleRegex = /module\s+([\w:]+)/g
+  let modMatch: RegExpExecArray | null
+  while ((modMatch = moduleRegex.exec(content)) !== null) {
+    modules.push(modMatch[1])
+  }
+
+  if (modules.length === 0) {
+    return null
+  }
+
+  const modulePath = modules.join("::")
+
+  // Extract the self.included / class_eval block content
+  // We grab everything between self.included and its matching end
+  const includedStart = content.indexOf("self.included")
+  const includedContent = content.substring(includedStart)
+
+  const fields = parseFields(includedContent, "object")
+  if (fields.length === 0) {
+    return null
+  }
+
+  return { modulePath, fields }
+}
+
+/**
+ * Build a mixin field registry from all loaded Ruby files.
+ * Maps full Ruby module path → field list for every mixin that provides fields.
+ */
+export function parseMixinFieldRegistry(
+  files: Map<string, string>
+): Map<string, FieldDefinition[]> {
+  const registry = new Map<string, FieldDefinition[]>()
+  for (const [, content] of files) {
+    const mixin = parseMixinFields(content)
+    if (mixin) {
+      registry.set(mixin.modulePath, mixin.fields)
     }
   }
   return registry
@@ -3518,6 +3677,9 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   // only loading files that contain both `self.included` and `argument`.
   const mixinFiles = loadMixinFiles(basePath)
   const mixinRegistry = parseMixinRegistry(new Map([...files, ...mixinFiles]))
+  const mixinFieldRegistry = parseMixinFieldRegistry(
+    new Map([...files, ...mixinFiles])
+  )
 
   const typeDefs: GraphQLTypeDefinition[] = []
   const resolvers: ResolverDefinition[] = []
@@ -3526,7 +3688,7 @@ export function buildSchemaFromDirectory(basePath: string): SchemaBuildResult {
   for (const [filePath, content] of files) {
     try {
       // Try parsing as a type definition first
-      const def = parseRubyTypeDefinition(content, filePath)
+      const def = parseRubyTypeDefinition(content, filePath, mixinFieldRegistry)
       if (def) {
         typeDefs.push(def)
         logger.log(
